@@ -53,7 +53,7 @@ export default function ProjectDetailPage() {
   const [crawlResults, setCrawlResults] = useState<CrawlResult[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'audits' | 'pages'>('audits');
-  const [auditFilter, setAuditFilter] = useState<'all' | 'completed' | 'in_progress' | 'pending'>('all');
+  const [auditFilter, setAuditFilter] = useState<'all' | 'completed' | 'in_progress' | 'pending' | 'pending_approval'>('all');
   const [pageFilter, setPageFilter] = useState<'all' | 'recent'>('recent');
 
   useEffect(() => {
@@ -244,6 +244,16 @@ export default function ProjectDetailPage() {
               >
                 Pending
               </button>
+              <button
+                onClick={() => setAuditFilter('pending_approval')}
+                className={`rounded px-3 py-1 text-sm ${
+                  auditFilter === 'pending_approval'
+                    ? 'bg-orange-600 text-white'
+                    : 'bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300'
+                }`}
+              >
+                Needs Approval
+              </button>
             </div>
 
             {/* Audits List */}
@@ -254,10 +264,13 @@ export default function ProjectDetailPage() {
             ) : (
               <div className="space-y-3">
                 {filteredAudits.map((audit) => (
-                  <Link
+                  <div
                     key={audit.id}
-                    href={`/audits/${audit.id}`}
-                    className="block rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
+                    className={`relative block rounded-lg border p-4 shadow-sm transition-colors ${
+                      audit.status === 'pending_approval'
+                        ? 'border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-900/20'
+                        : 'border-zinc-200 bg-white hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:hover:bg-zinc-800'
+                    }`}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
@@ -268,7 +281,9 @@ export default function ProjectDetailPage() {
                                 ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
                                 : audit.status === 'in_progress'
                                   ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                                  : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                                  : audit.status === 'pending_approval'
+                                    ? 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200'
+                                    : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
                             }`}
                           >
                             {audit.status}
@@ -311,10 +326,56 @@ export default function ProjectDetailPage() {
                             )}
                           </div>
                         )}
+                        {audit.status === 'pending_approval' && (
+                          <div className="mt-3 rounded border border-orange-300 bg-orange-100 p-2 dark:border-orange-700 dark:bg-orange-900/30">
+                            <div className="mb-2 text-xs text-orange-800 dark:text-orange-200">
+                              ⚠️ robots.txt check failed or timed out. Please approve to continue crawling.
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                onClick={async (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (!confirm('Approve this crawl? This will skip robots.txt check and start crawling immediately.')) return;
+                                  try {
+                                    const res = await fetch(`/api/audits/${audit.id}/approve`, { method: 'POST' });
+                                    if (res.ok) {
+                                      fetchProjectData();
+                                    } else {
+                                      const error = await res.json();
+                                      alert(error.error || 'Failed to approve crawl');
+                                    }
+                                  } catch (error) {
+                                    console.error('Error approving crawl:', error);
+                                    alert('Failed to approve crawl');
+                                  }
+                                }}
+                                className="rounded bg-green-600 px-3 py-1 text-xs font-semibold text-white hover:bg-green-700"
+                              >
+                                ✅ Approve & Start Crawl
+                              </button>
+                              <Link
+                                href={`/audits/${audit.id}`}
+                                className="rounded bg-blue-600 px-3 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700"
+                              >
+                                View Details →
+                              </Link>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="ml-4 text-zinc-400">→</div>
+                      {audit.status !== 'pending_approval' && (
+                        <div className="ml-4 text-zinc-400">→</div>
+                      )}
                     </div>
-                  </Link>
+                    {audit.status !== 'pending_approval' && (
+                      <Link
+                        href={`/audits/${audit.id}`}
+                        className="absolute inset-0"
+                        aria-label={`View audit ${audit.id}`}
+                      />
+                    )}
+                  </div>
                 ))}
               </div>
             )}

@@ -128,7 +128,7 @@ export async function startAutomaticCrawl(
   // STEP 1: Check robots.txt - REQUIRED before crawling (unless approved)
   addAuditLog(auditId, 'setup', `🔍 Step 1: Checking robots.txt for ${baseUrl}...`, { baseUrl });
   
-  let robotsTxt: Awaited<ReturnType<typeof getRobotsTxt>>;
+  let robotsTxt: Awaited<ReturnType<typeof getRobotsTxt>> | null = null;
   let robotsTxtUrl: string | null = null;
   let crawlDelay: number | null = null;
   
@@ -136,71 +136,135 @@ export async function startAutomaticCrawl(
     // Skip robots.txt check (for approved crawls)
     console.log(`[Auto-Crawl] ⚠️  Skipping robots.txt check (approved crawl)`);
     robotsTxt = await getRobotsTxt(baseUrl); // Still get it for crawl delay, but don't require it
-    crawlDelay = robotsTxt.getCrawlDelay() || null;
+    crawlDelay = robotsTxt ? robotsTxt.getCrawlDelay() || null : null;
     const url = new URL(baseUrl);
     const robotsTxtUrl = `${url.protocol}//${url.host}/robots.txt`;
     addAuditLog(auditId, 'setup', `⚠️ robots.txt check skipped (approved crawl): ${robotsTxtUrl}`, { url: robotsTxtUrl, skipped: true });
   } else {
-    // Check robots.txt - REQUIRED
+    // Check robots.txt - REQUIRED - Try multiple variations before giving up
     console.log(`[Auto-Crawl] Checking robots.txt for ${baseUrl}...`);
     
     try {
       const url = new URL(baseUrl);
-      robotsTxtUrl = `${url.protocol}//${url.host}/robots.txt`;
+      const host = url.hostname;
+      const protocol = url.protocol;
       
-      const response = await fetch(robotsTxtUrl, {
-        headers: {
-          'User-Agent': 'SEO-Crawler/1.0',
-        },
-        signal: AbortSignal.timeout(10000), // 10 second timeout
-      });
+      // Generate all possible robots.txt URLs to try
+      const robotsTxtUrls: string[] = [];
+      
+      // Try with original host
+      robotsTxtUrls.push(`${protocol}//${host}/robots.txt`);
+      
+      // Try with/without www
+      if (host.startsWith('www.')) {
+        robotsTxtUrls.push(`${protocol}//${host.replace(/^www\./, '')}/robots.txt`);
+      } else {
+        robotsTxtUrls.push(`${protocol}//www.${host}/robots.txt`);
+      }
+      
+      // Try HTTP/HTTPS variations
+      if (protocol === 'https:') {
+        robotsTxtUrls.push(`http://${host}/robots.txt`);
+        if (!host.startsWith('www.')) {
+          robotsTxtUrls.push(`http://www.${host}/robots.txt`);
+        } else {
+          robotsTxtUrls.push(`http://${host.replace(/^www\./, '')}/robots.txt`);
+        }
+      } else if (protocol === 'http:') {
+        robotsTxtUrls.push(`https://${host}/robots.txt`);
+        if (!host.startsWith('www.')) {
+          robotsTxtUrls.push(`https://www.${host}/robots.txt`);
+        } else {
+          robotsTxtUrls.push(`https://${host.replace(/^www\./, '')}/robots.txt`);
+        }
+      }
+      
+      // Remove duplicates
+      const uniqueUrls = [...new Set(robotsTxtUrls)];
+      
+      console.log(`[Auto-Crawl] Trying ${uniqueUrls.length} robots.txt variations:`, uniqueUrls);
+      addAuditLog(auditId, 'setup', `🔍 Trying ${uniqueUrls.length} robots.txt locations...`, { urls: uniqueUrls, count: uniqueUrls.length });
+      
+      let foundRobotsTxt = false;
+      let lastError: Error | null = null;
+      
+      // Try each URL with a shorter timeout per attempt
+      for (const testUrl of uniqueUrls) {
+        try {
+          addAuditLog(auditId, 'setup', `  Trying: ${testUrl}`, { url: testUrl });
+          
+          const response = await fetch(testUrl, {
+            headers: {
+              'User-Agent': 'SEO-Crawler/1.0',
+            },
+            signal: AbortSignal.timeout(8000), // 8 second timeout per attempt
+          });
 
-      if (response.ok) {
-        robotsTxt = await getRobotsTxt(baseUrl);
-        crawlDelay = robotsTxt.getCrawlDelay() || null;
-        console.log(`[Auto-Crawl] ✅ robots.txt found at ${robotsTxtUrl}`);
-        addAuditLog(auditId, 'setup', `✅ robots.txt fetched successfully: ${robotsTxtUrl}`, { url: robotsTxtUrl, success: true });
-        
-        // Update domain record with robots.txt URL and crawl delay
-        if (domainId) {
-          try {
-            await prisma.domain.update({
-              where: { id: domainId },
-              data: {
-                robotsTxtUrl: robotsTxtUrl,
-                crawlDelay: crawlDelay ? Math.round(crawlDelay) : null,
-              },
-            });
-            console.log(`[Auto-Crawl] ✅ Saved robots.txt URL and crawl delay to domain record`);
-          } catch (error) {
-            console.error(`[Auto-Crawl] Error updating domain with robots.txt info:`, error);
+          if (response.ok) {
+            robotsTxtUrl = testUrl;
+            robotsTxt = await getRobotsTxt(baseUrl);
+            crawlDelay = robotsTxt ? robotsTxt.getCrawlDelay() || null : null;
+            console.log(`[Auto-Crawl] ✅ robots.txt found at ${robotsTxtUrl}`);
+            addAuditLog(auditId, 'setup', `✅ robots.txt fetched successfully: ${robotsTxtUrl}`, { url: robotsTxtUrl, success: true });
+            
+            // Update domain record with robots.txt URL and crawl delay
+            if (domainId) {
+              try {
+                await prisma.domain.update({
+                  where: { id: domainId },
+                  data: {
+                    robotsTxtUrl: robotsTxtUrl,
+                    crawlDelay: crawlDelay ? Math.round(crawlDelay) : null,
+                  },
+                });
+                console.log(`[Auto-Crawl] ✅ Saved robots.txt URL and crawl delay to domain record`);
+              } catch (error) {
+                console.error(`[Auto-Crawl] Error updating domain with robots.txt info:`, error);
+              }
+            }
+            
+            foundRobotsTxt = true;
+            break; // Success! Exit loop
+          } else if (response.status !== 404) {
+            // Non-404 errors might be temporary, log but continue trying
+            console.log(`[Auto-Crawl] ⚠️  Error ${response.status} at ${testUrl}, trying next...`);
+            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: HTTP ${response.status}`, { url: testUrl, status: response.status });
+          }
+        } catch (error: unknown) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          lastError = error instanceof Error ? error : new Error(String(error));
+          
+          // Log but continue trying other URLs
+          if (errorMessage.includes('timeout') || errorMessage.includes('aborted')) {
+            console.log(`[Auto-Crawl] ⚠️  Timeout at ${testUrl}, trying next...`);
+            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: Timeout`, { url: testUrl, error: 'timeout' });
+          } else {
+            console.log(`[Auto-Crawl] ⚠️  Error at ${testUrl}: ${errorMessage}, trying next...`);
+            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: ${errorMessage}`, { url: testUrl, error: errorMessage });
           }
         }
-      } else if (response.status === 404) {
-        // robots.txt not found - require approval
-        console.log(`[Auto-Crawl] ⚠️  robots.txt NOT FOUND at ${robotsTxtUrl} (404) - requires approval`);
-        addAuditLog(auditId, 'setup', `❌ robots.txt not found: ${robotsTxtUrl} (404)`, { url: robotsTxtUrl, success: false, error: '404 Not Found' });
-        await prisma.audit.update({
-          where: { id: auditId },
-          data: {
-            status: 'pending_approval',
-            startedAt: new Date(),
-          },
-        });
-        throw new Error('robots.txt not found - approval required before crawling');
-      } else {
-        // Other error - require approval
-        console.log(`[Auto-Crawl] ⚠️  Error fetching robots.txt: ${response.status} - requires approval`);
-        addAuditLog(auditId, 'setup', `❌ robots.txt fetch failed: ${robotsTxtUrl} (${response.status})`, { url: robotsTxtUrl, success: false, error: `HTTP ${response.status}` });
-        await prisma.audit.update({
-          where: { id: auditId },
-          data: {
-            status: 'pending_approval',
-            startedAt: new Date(),
-          },
-        });
-        throw new Error(`Failed to fetch robots.txt: ${response.status} - approval required`);
       }
+      
+      if (!foundRobotsTxt) {
+        // All attempts failed - require approval
+        const errorMessage = lastError instanceof Error ? lastError.message : 'All robots.txt locations failed';
+        console.log(`[Auto-Crawl] ⚠️  robots.txt NOT FOUND after trying ${uniqueUrls.length} locations - requires approval`);
+        addAuditLog(auditId, 'setup', `❌ robots.txt not found after trying ${uniqueUrls.length} locations`, { 
+          urls: uniqueUrls, 
+          success: false, 
+          error: errorMessage,
+          attempts: uniqueUrls.length
+        });
+        await prisma.audit.update({
+          where: { id: auditId },
+          data: {
+            status: 'pending_approval',
+            startedAt: new Date(),
+          },
+        });
+        throw new Error(`robots.txt not found after trying ${uniqueUrls.length} locations - approval required before crawling`);
+      }
+      
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       // If it's our custom error, re-throw it
@@ -295,7 +359,7 @@ export async function startAutomaticCrawl(
 
   // Queue base URL first (highest priority) - this starts crawling immediately
   // CRITICAL: Check robots.txt FIRST - never queue disallowed URLs
-  if (!robotsTxt.isAllowed(baseUrl)) {
+  if (!robotsTxt || !robotsTxt.isAllowed(baseUrl)) {
     console.log(`[Auto-Crawl] 🚫 Base URL disallowed by robots.txt, skipping: ${baseUrl}`);
   } else {
     const normalizedBaseUrl = normalizeUrl(baseUrl, baseUrl);
@@ -507,7 +571,7 @@ export async function startAutomaticCrawl(
           const originalUrl = sitemapUrlData.url;
           
           // FIRST: Check robots.txt (before normalization)
-          const isAllowed = robotsTxt.isAllowed(originalUrl);
+          const isAllowed = robotsTxt ? robotsTxt.isAllowed(originalUrl) : true;
           if (!isAllowed) {
             skippedRobotsTxt++;
             batchSkippedRobots++;

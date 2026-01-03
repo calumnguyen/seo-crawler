@@ -101,25 +101,111 @@ export async function fetchSitemapsFromRobotsTxt(robotsTxtUrl: string): Promise<
 export async function discoverSitemaps(baseUrl: string): Promise<string[]> {
   try {
     const url = new URL(baseUrl);
-    const robotsTxtUrl = `${url.protocol}//${url.host}/robots.txt`;
+    const host = url.hostname;
+    const protocol = url.protocol;
     
-    const sitemaps = await fetchSitemapsFromRobotsTxt(robotsTxtUrl);
+    const sitemaps: string[] = [];
+    const checkedUrls = new Set<string>();
     
-    // Also try common sitemap locations
-    const commonSitemaps = [
-      `${url.protocol}//${url.host}/sitemap.xml`,
-      `${url.protocol}//${url.host}/sitemap_index.xml`,
-    ];
-
-    // Check if common sitemaps exist
-    for (const sitemapUrl of commonSitemaps) {
+    // Generate all possible robots.txt URLs to try
+    const robotsTxtUrls: string[] = [];
+    robotsTxtUrls.push(`${protocol}//${host}/robots.txt`);
+    
+    // Try with/without www
+    if (host.startsWith('www.')) {
+      robotsTxtUrls.push(`${protocol}//${host.replace(/^www\./, '')}/robots.txt`);
+    } else {
+      robotsTxtUrls.push(`${protocol}//www.${host}/robots.txt`);
+    }
+    
+    // Try HTTP/HTTPS variations
+    if (protocol === 'https:') {
+      robotsTxtUrls.push(`http://${host}/robots.txt`);
+      if (!host.startsWith('www.')) {
+        robotsTxtUrls.push(`http://www.${host}/robots.txt`);
+      } else {
+        robotsTxtUrls.push(`http://${host.replace(/^www\./, '')}/robots.txt`);
+      }
+    } else if (protocol === 'http:') {
+      robotsTxtUrls.push(`https://${host}/robots.txt`);
+      if (!host.startsWith('www.')) {
+        robotsTxtUrls.push(`https://www.${host}/robots.txt`);
+      } else {
+        robotsTxtUrls.push(`https://${host.replace(/^www\./, '')}/robots.txt`);
+      }
+    }
+    
+    // Fetch sitemaps from all robots.txt variations
+    for (const robotsTxtUrl of robotsTxtUrls) {
       try {
-        const response = await fetch(sitemapUrl, { method: 'HEAD' });
-        if (response.ok && !sitemaps.includes(sitemapUrl)) {
-          sitemaps.push(sitemapUrl);
+        const robotsSitemaps = await fetchSitemapsFromRobotsTxt(robotsTxtUrl);
+        for (const sitemap of robotsSitemaps) {
+          if (!checkedUrls.has(sitemap)) {
+            sitemaps.push(sitemap);
+            checkedUrls.add(sitemap);
+          }
         }
       } catch {
-        // Ignore errors
+        // Ignore errors, continue trying other robots.txt locations
+      }
+    }
+    
+    // Generate all possible sitemap URLs to try
+    const sitemapVariations: string[] = [];
+    
+    // Common sitemap locations for each host/protocol variation
+    const hostsToTry: string[] = [host];
+    if (host.startsWith('www.')) {
+      hostsToTry.push(host.replace(/^www\./, ''));
+    } else {
+      hostsToTry.push(`www.${host}`);
+    }
+    
+    const protocolsToTry: string[] = [protocol];
+    if (protocol === 'https:') {
+      protocolsToTry.push('http:');
+    } else if (protocol === 'http:') {
+      protocolsToTry.push('https:');
+    }
+    
+    // Generate all combinations
+    for (const testProtocol of protocolsToTry) {
+      for (const testHost of hostsToTry) {
+        const base = `${testProtocol}//${testHost}`;
+        sitemapVariations.push(
+          `${base}/sitemap.xml`,
+          `${base}/sitemap_index.xml`,
+          `${base}/sitemap1.xml`,
+          `${base}/sitemap-index.xml`,
+          `${base}/sitemap-news.xml`,
+          `${base}/sitemap-products.xml`,
+          `${base}/sitemap-pages.xml`,
+          `${base}/sitemap-posts.xml`,
+        );
+      }
+    }
+    
+    // Remove duplicates
+    const uniqueSitemapUrls = [...new Set(sitemapVariations)];
+    
+    console.log(`[Sitemap] Trying ${uniqueSitemapUrls.length} sitemap locations...`);
+    
+    // Check if common sitemaps exist (with timeout per attempt)
+    for (const sitemapUrl of uniqueSitemapUrls) {
+      if (checkedUrls.has(sitemapUrl)) continue; // Already found via robots.txt
+      
+      try {
+        const response = await fetch(sitemapUrl, { 
+          method: 'HEAD',
+          signal: AbortSignal.timeout(5000), // 5 second timeout per attempt
+        });
+        if (response.ok && !sitemaps.includes(sitemapUrl)) {
+          sitemaps.push(sitemapUrl);
+          checkedUrls.add(sitemapUrl);
+          console.log(`[Sitemap] ✅ Found sitemap: ${sitemapUrl}`);
+        }
+      } catch {
+        // Ignore errors, continue trying other locations
       }
     }
 

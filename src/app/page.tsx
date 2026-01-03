@@ -475,6 +475,9 @@ export default function Dashboard() {
                 const activeAudits = mostRecent.audits?.filter((a) => 
                   a.status === 'in_progress' || a.status === 'paused'
                 ) || [];
+                const pendingApprovalAudits = mostRecent.audits?.filter((a) => 
+                  a.status === 'pending_approval'
+                ) || [];
                 const lastCompletedAudit = mostRecent.audits
                   ?.filter((a) => a.status === 'completed' && (a as any).completedAt)
                   .sort((a, b) => {
@@ -494,6 +497,58 @@ export default function Dashboard() {
                       </p>
                     </div>
                     
+                    {pendingApprovalAudits.length > 0 ? (
+                      <div className="mb-4 space-y-3">
+                        {pendingApprovalAudits.map((audit) => (
+                          <div
+                            key={audit.id}
+                            className="rounded border border-orange-200 bg-orange-50 p-3 dark:border-orange-800 dark:bg-orange-900/20"
+                          >
+                            <div className="mb-2 flex items-center justify-between">
+                              <span className="text-xs font-medium text-black dark:text-zinc-50">
+                                ⚠️ Approval Required
+                              </span>
+                              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                                pending_approval
+                              </span>
+                            </div>
+                            <div className="mb-3 text-xs text-zinc-600 dark:text-zinc-400">
+                              robots.txt check failed or timed out. Please approve to continue crawling.
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                onClick={async (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (!confirm('Approve this crawl? This will skip robots.txt check and start crawling immediately.')) return;
+                                  try {
+                                    const res = await fetch(`/api/audits/${audit.id}/approve`, { method: 'POST' });
+                                    if (res.ok) {
+                                      fetchData();
+                                    } else {
+                                      const error = await res.json();
+                                      alert(error.error || 'Failed to approve crawl');
+                                    }
+                                  } catch (error) {
+                                    console.error('Error approving crawl:', error);
+                                    alert('Failed to approve crawl');
+                                  }
+                                }}
+                                className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700"
+                              >
+                                ✅ Approve & Start Crawl
+                              </button>
+                              <Link
+                                href={`/audits/${audit.id}`}
+                                className="flex-1 rounded bg-blue-600 px-2 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700"
+                              >
+                                View Details →
+                              </Link>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                     {activeAudits.length > 0 ? (
                       <div className="space-y-3">
                         {activeAudits.map((audit) => (
