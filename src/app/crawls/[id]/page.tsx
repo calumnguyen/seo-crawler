@@ -129,7 +129,7 @@ export default function CrawlDetailPage() {
           <div>
             <Link
               href="/crawls"
-              className="mb-2 text-sm text-zinc-600 hover:underline dark:text-zinc-400"
+              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
             >
               ← Back to All Crawls
             </Link>
@@ -139,9 +139,9 @@ export default function CrawlDetailPage() {
           </div>
           <Link
             href="/"
-            className="rounded-lg bg-black px-4 py-2 text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-black dark:hover:bg-zinc-200"
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
           >
-            Dashboard
+            ← Back to Dashboard
           </Link>
         </div>
 

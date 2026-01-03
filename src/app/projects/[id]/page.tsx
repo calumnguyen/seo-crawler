@@ -105,7 +105,9 @@ export default function ProjectDetailPage() {
     return true;
   });
 
-  if (loading) {
+  // Only show full loading screen on initial load
+  // After that, show partial content even if some data is still loading
+  if (loading && !project && audits.length === 0 && crawlResults.length === 0) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-xl">Loading project...</div>
@@ -143,6 +145,12 @@ export default function ProjectDetailPage() {
               Created {new Date(project.createdAt).toLocaleDateString()}
             </p>
           </div>
+          <Link
+            href="/"
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
+          >
+            ← Back to Dashboard
+          </Link>
         </div>
 
         {/* Stats */}

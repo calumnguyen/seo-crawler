@@ -28,15 +28,24 @@ export async function POST(
       );
     }
 
-    if (audit.status === 'in_progress') {
+    if (audit.status === 'in_progress' || audit.status === 'pending_approval') {
       return NextResponse.json(
         { 
-          error: 'Crawl already in progress',
-          message: 'This audit is already being crawled. Please wait for it to complete.',
+          error: 'Crawl already in progress or pending approval',
+          message: 'This audit is already being processed. Please wait or check the audit details.',
         },
         { status: 409 } // Conflict
       );
     }
+
+    // Immediately mark audit as in_progress to prevent double-clicks and show control buttons
+    await prisma.audit.update({
+      where: { id: auditId },
+      data: { 
+        status: 'in_progress',
+        startedAt: new Date(),
+      },
+    });
 
     // Start crawl asynchronously - don't wait for it
     // This returns immediately after marking audit as in_progress
@@ -46,6 +55,14 @@ export async function POST(
       
       // Update audit status based on error type
       const errorMessage = error instanceof Error ? error.message : String(error);
+      
+      // Don't mark as failed if it's "already in progress" - this is a race condition
+      // The status is already in_progress, so leave it as is
+      if (errorMessage.includes('already in progress')) {
+        console.log('[API] Crawl already in progress (race condition), leaving status as in_progress');
+        return; // Don't update status
+      }
+      
       let newStatus = 'failed';
       
       // If it's an approval required error, set to pending_approval

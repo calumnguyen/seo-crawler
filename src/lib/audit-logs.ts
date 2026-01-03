@@ -31,7 +31,20 @@ export function addAuditLog(
     },
   }).catch((error: unknown) => {
     // If database write fails, log error but don't throw (non-critical)
-    console.error(`[Audit-Logs] Failed to save log to database:`, error);
+    const errorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // If audit was deleted (foreign key constraint violation), silently ignore
+    // This happens when jobs are still processing after audit is deleted
+    if (errorCode === 'P2003' || 
+        errorMessage.includes('foreign key constraint') || 
+        errorMessage.includes('AuditLog_auditId_fkey')) {
+      // Audit was deleted - no need to log, just silently ignore
+      return;
+    }
+    
+    // Log other errors for debugging
+    console.error(`[Audit-Logs] Failed to save log to database:`, errorMessage);
   });
 }
 

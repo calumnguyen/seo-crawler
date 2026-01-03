@@ -40,7 +40,15 @@ export async function GET(
 
     // Get jobs for this audit
     const allJobs = await crawlQueue.getJobs(['waiting', 'active', 'delayed', 'completed', 'failed'], 0, 100);
-    const auditJobs = allJobs.filter((job: Job<CrawlJob>) => job.data?.auditId === auditId);
+    const auditJobs = allJobs.filter((job: Job<CrawlJob> | null) => {
+      // Handle null jobs (can happen if job was removed during fetch)
+      if (!job || !job.data) return false;
+      try {
+        return job.data.auditId === auditId;
+      } catch {
+        return false;
+      }
+    });
 
     const jobsByState = {
       waiting: auditJobs.filter((j: Job<CrawlJob>) => j.opts?.delay && j.opts.delay > Date.now()).length,

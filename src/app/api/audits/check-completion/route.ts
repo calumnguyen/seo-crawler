@@ -28,10 +28,10 @@ export async function POST() {
 
     // Filter audits that have been paused for over 14 days
     // Use pausedAt if available, otherwise use startedAt as fallback
-    const auditsToStop = pausedAudits.filter((audit: { id: string; pausedAt: Date | null; startedAt: Date }) => {
+    const auditsToStop = pausedAudits.filter((audit) => {
       // Type assertion needed because pausedAt might not be in Prisma client yet
-      const auditWithPausedAt = audit as { pausedAt?: Date | null };
-      const pauseTime = auditWithPausedAt.pausedAt || audit.startedAt;
+      const auditWithPausedAt = audit as { pausedAt?: Date | null; startedAt: Date };
+      const pauseTime = auditWithPausedAt.pausedAt || auditWithPausedAt.startedAt;
       return pauseTime && pauseTime <= fourteenDaysAgo;
     });
 
@@ -104,45 +104,23 @@ export async function POST() {
         where: { auditId: audit.id },
       });
       
-      // Get actual queued log count from database (this is the source of truth)
-      // pagesTotal should equal the count of queued logs, not queue count
-      const queuedLogCount = await prisma.auditLog.count({
-        where: {
-          auditId: audit.id,
-          category: 'queued',
-        },
-      });
-      
-      // CRITICAL: pagesTotal should equal queued log count
-      // If it doesn't match, fix it (but never reduce it based on queue count)
-      if (audit.pagesTotal !== queuedLogCount && queuedLogCount > 0) {
-        console.log(`[Check-Completion] ⚠️  Audit ${audit.id} pagesTotal (${audit.pagesTotal}) doesn't match queued log count (${queuedLogCount}). Fixing pagesTotal to match queued logs.`);
-        await prisma.audit.update({
-          where: { id: audit.id },
-          data: {
-            pagesTotal: queuedLogCount,
-          },
-        });
-        // Update audit reference for completion check below
-        audit.pagesTotal = queuedLogCount;
-      }
-      
-      // Case: pagesCrawled > pagesTotal (race condition - pages crawled before pagesTotal updated)
-      // CRITICAL: Always fix this immediately - pagesTotal must be >= pagesCrawled
-      if (pagesCrawled > audit.pagesTotal) {
-        // Update pagesTotal to be at least equal to pagesCrawled
-        const correctedTotal = Math.max(queuedLogCount, pagesCrawled);
-        console.log(`[Check-Completion] ⚠️  Audit ${audit.id} pagesCrawled (${pagesCrawled}) > pagesTotal (${audit.pagesTotal}). Fixing pagesTotal to ${correctedTotal}.`);
-        await prisma.audit.update({
-          where: { id: audit.id },
-          data: {
-            pagesTotal: correctedTotal,
-          },
-        });
-        audit.pagesTotal = correctedTotal;
-      }
-      
+      // Calculate actual pagesTotal = crawled + queued_in_redis
+      // This represents URLs that will be/are crawled (NOT skipped - those are already processed and won't be crawled)
       const queueCount = auditJobs.length;
+      const actualPagesTotal = pagesCrawled + queueCount;
+      
+      // Update pagesTotal to reflect actual total (crawled + queued)
+      // Skipped URLs are NOT included because they were processed but NOT crawled
+      if (audit.pagesTotal !== actualPagesTotal) {
+        console.log(`[Check-Completion] Updating pagesTotal for audit ${audit.id}: ${audit.pagesTotal} → ${actualPagesTotal} (crawled: ${pagesCrawled}, queued: ${queueCount})`);
+        await prisma.audit.update({
+          where: { id: audit.id },
+          data: {
+            pagesTotal: actualPagesTotal,
+          },
+        });
+        audit.pagesTotal = actualPagesTotal;
+      }
 
       // If no jobs in queue, check if we should mark as completed
       // BUT: Only mark as completed if:

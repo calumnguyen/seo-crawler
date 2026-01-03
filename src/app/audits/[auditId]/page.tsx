@@ -48,6 +48,13 @@ export default function AuditDetailPage() {
   const [loading, setLoading] = useState(true);
   const [diagnostics, setDiagnostics] = useState<any>(null);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [actionLoading, setActionLoading] = useState<'pause' | 'resume' | 'stop' | null>(null);
+  const [queueStatus, setQueueStatus] = useState<{
+    waiting: number;
+    active: number;
+    delayed: number;
+    total: number;
+  } | null>(null);
   const [logs, setLogs] = useState<{
     setup: any[];
     filtering: any[];
@@ -114,11 +121,20 @@ export default function AuditDetailPage() {
   useEffect(() => {
     fetchAuditData();
     fetchLogs();
+    // Trigger check-completion to update pagesTotal immediately
+    if (auditId) {
+      fetch('/api/audits/check-completion', { method: 'POST' }).catch(() => {});
+    }
     const interval = setInterval(fetchAuditData, 5000);
     const logsInterval = setInterval(fetchLogs, 2000); // Fetch logs more frequently
+    // Also trigger check-completion periodically to keep pagesTotal updated
+    const completionInterval = setInterval(() => {
+      fetch('/api/audits/check-completion', { method: 'POST' }).catch(() => {});
+    }, 10000); // Every 10 seconds
     return () => {
       clearInterval(interval);
       clearInterval(logsInterval);
+      clearInterval(completionInterval);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auditId]);
@@ -218,6 +234,24 @@ export default function AuditDetailPage() {
     if (!auditId) return;
     
     try {
+      // Fetch actual Redis queue status for this audit
+      try {
+        const diagnosticsRes = await fetch(`/api/audits/${auditId}/diagnostics`);
+        if (diagnosticsRes.ok) {
+          const diagnosticsData = await diagnosticsRes.json();
+          if (diagnosticsData.queue?.forThisAudit) {
+            setQueueStatus({
+              waiting: diagnosticsData.queue.forThisAudit.waiting || 0,
+              active: diagnosticsData.queue.forThisAudit.active || 0,
+              delayed: diagnosticsData.queue.forThisAudit.delayed || 0,
+              total: diagnosticsData.queue.forThisAudit.total || 0,
+            });
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching queue status:', error);
+      }
+      
       const [setupRes, filteringRes, queuedRes, crawledRes, skippedRes] = await Promise.all([
         fetch(`/api/audits/${auditId}/logs?category=setup`),
         fetch(`/api/audits/${auditId}/logs?category=filtering`),
@@ -229,11 +263,17 @@ export default function AuditDetailPage() {
       if (setupRes.ok) {
         const data = await setupRes.json();
         const reversedLogs = (data.logs || []).reverse();
+        // Check scroll position BEFORE updating logs to avoid stale state
+        const ref = logRefs.setup.current;
+        const wasAtBottom = ref ? (ref.scrollHeight - ref.scrollTop - ref.clientHeight < 10) : true;
         setLogs(prev => ({ ...prev, setup: reversedLogs }));
-        // Smart auto-scroll: only if at bottom
+        // Smart auto-scroll: only if was at bottom before update
         setTimeout(() => {
-          if (isAtBottom.setup) {
-            logRefs.setup.current?.scrollTo({ top: logRefs.setup.current.scrollHeight, behavior: 'smooth' });
+          if (wasAtBottom && logRefs.setup.current) {
+            logRefs.setup.current.scrollTo({ top: logRefs.setup.current.scrollHeight, behavior: 'smooth' });
+            setIsAtBottom(prev => ({ ...prev, setup: true }));
+          } else {
+            setIsAtBottom(prev => ({ ...prev, setup: false }));
           }
         }, 100);
       } else {
@@ -243,11 +283,17 @@ export default function AuditDetailPage() {
       if (filteringRes.ok) {
         const data = await filteringRes.json();
         const reversedLogs = (data.logs || []).reverse();
+        // Check scroll position BEFORE updating logs to avoid stale state
+        const ref = logRefs.filtering.current;
+        const wasAtBottom = ref ? (ref.scrollHeight - ref.scrollTop - ref.clientHeight < 10) : true;
         setLogs(prev => ({ ...prev, filtering: reversedLogs }));
-        // Smart auto-scroll: only if at bottom
+        // Smart auto-scroll: only if was at bottom before update
         setTimeout(() => {
-          if (isAtBottom.filtering) {
-            logRefs.filtering.current?.scrollTo({ top: logRefs.filtering.current.scrollHeight, behavior: 'smooth' });
+          if (wasAtBottom && logRefs.filtering.current) {
+            logRefs.filtering.current.scrollTo({ top: logRefs.filtering.current.scrollHeight, behavior: 'smooth' });
+            setIsAtBottom(prev => ({ ...prev, filtering: true }));
+          } else {
+            setIsAtBottom(prev => ({ ...prev, filtering: false }));
           }
         }, 100);
       } else {
@@ -258,11 +304,17 @@ export default function AuditDetailPage() {
       if (queuedRes.ok) {
         const data = await queuedRes.json();
         const reversedLogs = (data.logs || []).reverse();
+        // Check scroll position BEFORE updating logs to avoid stale state
+        const ref = logRefs.queued.current;
+        const wasAtBottom = ref ? (ref.scrollHeight - ref.scrollTop - ref.clientHeight < 10) : true;
         setLogs(prev => ({ ...prev, queued: reversedLogs }));
-        // Smart auto-scroll: only if at bottom
+        // Smart auto-scroll: only if was at bottom before update
         setTimeout(() => {
-          if (isAtBottom.queued) {
-            logRefs.queued.current?.scrollTo({ top: logRefs.queued.current.scrollHeight, behavior: 'smooth' });
+          if (wasAtBottom && logRefs.queued.current) {
+            logRefs.queued.current.scrollTo({ top: logRefs.queued.current.scrollHeight, behavior: 'smooth' });
+            setIsAtBottom(prev => ({ ...prev, queued: true }));
+          } else {
+            setIsAtBottom(prev => ({ ...prev, queued: false }));
           }
         }, 100);
       } else {
@@ -272,11 +324,17 @@ export default function AuditDetailPage() {
       if (crawledRes.ok) {
         const data = await crawledRes.json();
         const reversedLogs = (data.logs || []).reverse();
+        // Check scroll position BEFORE updating logs to avoid stale state
+        const ref = logRefs.crawled.current;
+        const wasAtBottom = ref ? (ref.scrollHeight - ref.scrollTop - ref.clientHeight < 10) : true;
         setLogs(prev => ({ ...prev, crawled: reversedLogs }));
-        // Smart auto-scroll: only if at bottom
+        // Smart auto-scroll: only if was at bottom before update
         setTimeout(() => {
-          if (isAtBottom.crawled) {
-            logRefs.crawled.current?.scrollTo({ top: logRefs.crawled.current.scrollHeight, behavior: 'smooth' });
+          if (wasAtBottom && logRefs.crawled.current) {
+            logRefs.crawled.current.scrollTo({ top: logRefs.crawled.current.scrollHeight, behavior: 'smooth' });
+            setIsAtBottom(prev => ({ ...prev, crawled: true }));
+          } else {
+            setIsAtBottom(prev => ({ ...prev, crawled: false }));
           }
         }, 100);
       } else {
@@ -286,11 +344,17 @@ export default function AuditDetailPage() {
       if (skippedRes.ok) {
         const data = await skippedRes.json();
         const reversedLogs = (data.logs || []).reverse();
+        // Check scroll position BEFORE updating logs to avoid stale state
+        const ref = logRefs.skipped.current;
+        const wasAtBottom = ref ? (ref.scrollHeight - ref.scrollTop - ref.clientHeight < 10) : true;
         setLogs(prev => ({ ...prev, skipped: reversedLogs }));
-        // Smart auto-scroll: only if at bottom
+        // Smart auto-scroll: only if was at bottom before update
         setTimeout(() => {
-          if (isAtBottom.skipped) {
-            logRefs.skipped.current?.scrollTo({ top: logRefs.skipped.current.scrollHeight, behavior: 'smooth' });
+          if (wasAtBottom && logRefs.skipped.current) {
+            logRefs.skipped.current.scrollTo({ top: logRefs.skipped.current.scrollHeight, behavior: 'smooth' });
+            setIsAtBottom(prev => ({ ...prev, skipped: true }));
+          } else {
+            setIsAtBottom(prev => ({ ...prev, skipped: false }));
           }
         }, 100);
       } else {
@@ -355,19 +419,27 @@ export default function AuditDetailPage() {
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
       <main className="container mx-auto max-w-7xl px-4 py-8">
         {/* Header */}
-        <div className="mb-6">
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <Link
+              href={`/projects/${audit.project.id}`}
+              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+            >
+              ← Back to Project
+            </Link>
+            <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
+              Crawl Attempt Details
+            </h1>
+            <p className="text-lg text-zinc-600 dark:text-zinc-400">
+              {audit.project.name} • {audit.project.baseUrl}
+            </p>
+          </div>
           <Link
-            href={`/projects/${audit.project.id}`}
-            className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+            href="/"
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
           >
-            ← Back to Project
+            ← Back to Dashboard
           </Link>
-          <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
-            Crawl Attempt Details
-          </h1>
-          <p className="text-lg text-zinc-600 dark:text-zinc-400">
-            {audit.project.name} • {audit.project.baseUrl}
-          </p>
         </div>
 
         {/* Audit Info */}
@@ -392,7 +464,17 @@ export default function AuditDetailPage() {
             <div>
               <div className="text-sm text-zinc-600 dark:text-zinc-400">Pages</div>
               <div className="mt-1 text-xl font-bold text-black dark:text-zinc-50">
-                {audit.pagesCrawled} / {logs.queued.length || audit.pagesTotal || '?'}
+                {(() => {
+                  // Use actual crawled count from pagination (more accurate than stored counter)
+                  const actualCrawled = crawlResultsPagination?.total || crawlResults.length || audit.pagesCrawled;
+                  // Calculate pagesTotal: crawled + queued_in_redis (NOT historical queued logs)
+                  // Use audit.pagesTotal if available, otherwise calculate from queueStatus
+                  const calculatedTotal = queueStatus 
+                    ? actualCrawled + queueStatus.total 
+                    : audit.pagesTotal || 0;
+                  const displayTotal = audit.pagesTotal > 0 ? audit.pagesTotal : calculatedTotal;
+                  return `${actualCrawled} / ${displayTotal > 0 ? displayTotal : '?'}`;
+                })()}
               </div>
               {audit.status === 'in_progress' && (
                 <>
@@ -401,7 +483,7 @@ export default function AuditDetailPage() {
                       ⚠️ No URLs queued - check diagnostics
                     </div>
                   )}
-                  {logs.queued.length > 0 && audit.pagesCrawled === 0 && (
+                  {logs.queued.length > 0 && (crawlResultsPagination?.total || crawlResults.length || audit.pagesCrawled) === 0 && (
                     <div className="mt-1 text-xs text-yellow-600 dark:text-yellow-400">
                       ⚠️ URLs discovered but not queued - jobs may have failed to queue
                     </div>
@@ -425,19 +507,44 @@ export default function AuditDetailPage() {
             )}
           </div>
 
-          {audit.status === 'in_progress' && (logs.queued.length > 0 || audit.pagesTotal > 0) && (
+          {audit.status === 'in_progress' && (() => {
+            // Use actual crawled count from pagination (more accurate than stored counter)
+            const actualCrawled = crawlResultsPagination?.total || crawlResults.length || audit.pagesCrawled;
+            // Calculate pagesTotal: crawled + queued_in_redis (NOT historical queued logs)
+            const calculatedTotal = queueStatus 
+              ? actualCrawled + queueStatus.total 
+              : audit.pagesTotal || 0;
+            const displayTotal = audit.pagesTotal > 0 ? audit.pagesTotal : calculatedTotal;
+            return displayTotal > 0;
+          })() && (
             <div className="mb-4">
               <div className="mb-1 flex justify-between text-sm text-zinc-600 dark:text-zinc-400">
                 <span>Progress</span>
                 <span>
-                  {((audit.pagesCrawled / (logs.queued.length || audit.pagesTotal || 1)) * 100).toFixed(1)}%
+                  {(() => {
+                    // Use actual crawled count from pagination (more accurate than stored counter)
+                    const actualCrawled = crawlResultsPagination?.total || crawlResults.length || audit.pagesCrawled;
+                    const calculatedTotal = queueStatus 
+                      ? actualCrawled + queueStatus.total 
+                      : audit.pagesTotal || 1;
+                    const displayTotal = audit.pagesTotal > 0 ? audit.pagesTotal : calculatedTotal;
+                    return ((actualCrawled / displayTotal) * 100).toFixed(1);
+                  })()}%
                 </span>
               </div>
               <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700">
                 <div
                   className="h-full bg-blue-500 transition-all"
                   style={{
-                    width: `${(audit.pagesCrawled / (logs.queued.length || audit.pagesTotal || 1)) * 100}%`,
+                    width: `${(() => {
+                      // Use actual crawled count from pagination (more accurate than stored counter)
+                      const actualCrawled = crawlResultsPagination?.total || crawlResults.length || audit.pagesCrawled;
+                      const calculatedTotal = queueStatus 
+                        ? actualCrawled + queueStatus.total 
+                        : audit.pagesTotal || 1;
+                      const displayTotal = audit.pagesTotal > 0 ? audit.pagesTotal : calculatedTotal;
+                      return (actualCrawled / displayTotal) * 100;
+                    })()}%`,
                   }}
                 />
               </div>
@@ -451,10 +558,12 @@ export default function AuditDetailPage() {
                 <button
                   onClick={async () => {
                     if (!confirm('Pause the crawl? It can be resumed later.')) return;
+                    
+                    setActionLoading('pause');
                     try {
                       const res = await fetch(`/api/audits/${auditId}/pause`, { method: 'POST' });
                       if (res.ok) {
-                        fetchAuditData();
+                        await fetchAuditData(); // Refresh to get actual state
                       } else {
                         const error = await res.json();
                         alert(error.error || 'Failed to pause crawl');
@@ -462,20 +571,24 @@ export default function AuditDetailPage() {
                     } catch (error) {
                       console.error('Error pausing crawl:', error);
                       alert('Failed to pause crawl');
+                    } finally {
+                      setActionLoading(null);
                     }
                   }}
-                  className="rounded-lg bg-yellow-600 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-700"
+                  disabled={actionLoading !== null}
+                  className="rounded-lg bg-yellow-600 px-4 py-2 text-sm font-semibold text-white hover:bg-yellow-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  ⏸️ Pause
+                  {actionLoading === 'pause' ? '⏳ Pausing...' : '⏸️ Pause'}
                 </button>
               )}
               {audit.status === 'paused' && (
                 <button
                   onClick={async () => {
+                    setActionLoading('resume');
                     try {
                       const res = await fetch(`/api/audits/${auditId}/resume`, { method: 'POST' });
                       if (res.ok) {
-                        fetchAuditData();
+                        await fetchAuditData(); // Refresh to get actual state
                       } else {
                         const error = await res.json();
                         alert(error.error || 'Failed to resume crawl');
@@ -483,20 +596,25 @@ export default function AuditDetailPage() {
                     } catch (error) {
                       console.error('Error resuming crawl:', error);
                       alert('Failed to resume crawl');
+                    } finally {
+                      setActionLoading(null);
                     }
                   }}
-                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700"
+                  disabled={actionLoading !== null}
+                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  ▶️ Resume
+                  {actionLoading === 'resume' ? '⏳ Resuming...' : '▶️ Resume'}
                 </button>
               )}
               <button
                 onClick={async () => {
                   if (!confirm('Stop the crawl? All queued jobs will be removed and this crawl CANNOT be resumed. Use Pause if you want to resume later.')) return;
+                  
+                  setActionLoading('stop');
                   try {
                     const res = await fetch(`/api/audits/${auditId}/stop`, { method: 'POST' });
                     if (res.ok) {
-                      fetchAuditData();
+                      await fetchAuditData(); // Refresh to get actual state
                     } else {
                       const error = await res.json();
                       alert(error.error || 'Failed to stop crawl');
@@ -504,11 +622,14 @@ export default function AuditDetailPage() {
                   } catch (error) {
                     console.error('Error stopping crawl:', error);
                     alert('Failed to stop crawl');
+                  } finally {
+                    setActionLoading(null);
                   }
                 }}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+                disabled={actionLoading !== null}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                ⏹️ Stop
+                {actionLoading === 'stop' ? '⏳ Stopping...' : '⏹️ Stop'}
               </button>
               <button
                 onClick={async () => {
@@ -565,7 +686,7 @@ export default function AuditDetailPage() {
           {/* If pages have been crawled, jobs were clearly queued (they just completed) */}
           {audit.status === 'in_progress' && 
            logs.queued.length > 0 && 
-           audit.pagesCrawled === 0 &&
+           (crawlResultsPagination?.total || crawlResults.length || audit.pagesCrawled) === 0 &&
            diagnostics && 
            diagnostics.queue?.forThisAudit?.total === 0 && (
             <div className="mb-4 rounded-lg border border-red-300 bg-red-50 p-4 dark:border-red-700 dark:bg-red-900/20">
@@ -794,9 +915,23 @@ export default function AuditDetailPage() {
               <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900">
                 <div className="border-b border-zinc-200 bg-green-50 px-4 py-2 dark:border-zinc-700 dark:bg-green-900/20">
                   <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-green-800 dark:text-green-200">
-                      ✅ Queued ({logs.queued.length})
-                    </h3>
+                    <div>
+                      <h3 className="font-semibold text-green-800 dark:text-green-200">
+                        ✅ Queued
+                      </h3>
+                      <div className="text-xs text-green-700 dark:text-green-300">
+                        {queueStatus ? (
+                          <>
+                            <span className="font-medium">Redis Queue: {queueStatus.total}</span>
+                            {' '}(waiting: {queueStatus.waiting}, active: {queueStatus.active}
+                            {queueStatus.delayed > 0 && `, delayed: ${queueStatus.delayed}`})
+                            {' '}• Historical logs: {logs.queued.length}
+                          </>
+                        ) : (
+                          `Historical logs: ${logs.queued.length}`
+                        )}
+                      </div>
+                    </div>
                     <div className="flex items-center gap-2">
                       <input
                         type="text"

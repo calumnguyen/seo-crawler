@@ -33,6 +33,23 @@ export async function POST(
       );
     }
 
+    // CRITICAL: Update audit status to stopped FIRST (before removing jobs)
+    // This ensures active jobs will immediately see the stopped status and abort
+    const actualPagesCrawled = await prisma.crawlResult.count({
+      where: { auditId },
+    });
+
+    await prisma.audit.update({
+      where: { id: auditId },
+      data: {
+        status: 'stopped',
+        completedAt: new Date(),
+        pagesCrawled: actualPagesCrawled, // Update to actual count from database
+      },
+    });
+
+    console.log(`[Stop] ⚠️  Audit ${auditId} marked as stopped immediately. Active jobs will abort on next status check.`);
+
     // Remove all jobs for this audit from the queue
     const jobs = await crawlQueue.getJobs(['waiting', 'active', 'delayed']);
     const auditJobs = jobs.filter((j: Job<CrawlJob>) => j.data?.auditId === auditId);
@@ -45,28 +62,11 @@ export async function POST(
           await job.remove();
           removedCount++;
         }
-        // Active jobs will complete, but we mark audit as stopped
+        // Active jobs will check status and abort on next check
       } catch (error) {
         console.error(`Error removing job ${job.id}:`, error);
       }
     }
-
-    // CRITICAL: Recalculate pagesCrawled from actual database count before stopping
-    // This ensures the count is accurate even if incremental updates had issues
-    const actualPagesCrawled = await prisma.crawlResult.count({
-      where: { auditId },
-    });
-
-    // Update audit status to stopped
-    // IMPORTANT: Stopped audits CANNOT be resumed (unlike paused audits)
-    await prisma.audit.update({
-      where: { id: auditId },
-      data: {
-        status: 'stopped',
-        completedAt: new Date(),
-        pagesCrawled: actualPagesCrawled, // Update to actual count from database
-      },
-    });
 
     console.log(`[Stop] Audit ${auditId} stopped: ${actualPagesCrawled} pages actually crawled (updated from ${audit.pagesCrawled})`);
 

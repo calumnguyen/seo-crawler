@@ -82,6 +82,8 @@ export default function Dashboard() {
   const [newProjectName, setNewProjectName] = useState('');
   const [creating, setCreating] = useState(false);
   const [startingCrawl, setStartingCrawl] = useState<string | null>(null);
+  const [optimisticAudits, setOptimisticAudits] = useState<Set<string>>(new Set()); // Track audits we've optimistically marked as in_progress
+  const [actionLoading, setActionLoading] = useState<{ auditId: string; action: 'pause' | 'resume' | 'stop' } | null>(null);
 
   // Fetch all data
   const fetchData = async () => {
@@ -143,16 +145,18 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
+    // Trigger check-completion immediately to update pagesTotal
+    fetch('/api/audits/check-completion', { method: 'POST' }).catch(() => {});
     const interval = setInterval(fetchData, 5000); // Refresh every 5 seconds
     
-    // Also check for completed audits every 30 seconds
+    // Also check for completed audits every 10 seconds (more frequent to update pagesTotal)
     const completionCheck = setInterval(async () => {
       try {
         await fetch('/api/audits/check-completion', { method: 'POST' });
       } catch (error) {
         console.error('Error checking completion:', error);
       }
-    }, 30000);
+    }, 10000); // Every 10 seconds
     
     return () => {
       clearInterval(interval);
@@ -180,8 +184,37 @@ export default function Dashboard() {
       if (response.ok) {
         const { project, audit } = await response.json();
         
+        // Optimistically update UI to show the new project and audit as in_progress
+        setProjects(prevProjects => {
+          const updated = [...prevProjects];
+          const existingIndex = updated.findIndex(p => p.id === project.id);
+          const newProject = {
+            ...project,
+            audits: [{ ...audit, status: 'in_progress' as const }],
+          };
+          if (existingIndex >= 0) {
+            updated[existingIndex] = newProject;
+          } else {
+            updated.unshift(newProject);
+          }
+          return updated;
+        });
+        
+        // Optimistically add audit to activeAudits
+        setActivity(prev => ({
+          ...prev,
+          activeAudits: [
+            { ...audit, status: 'in_progress', project: { name: project.name, domain: project.domain } },
+            ...prev.activeAudits,
+          ],
+        }));
+        
+        // Mark audit as optimistically in_progress
+        setOptimisticAudits(prev => new Set(prev).add(audit.id));
+        
         // Automatically start the full crawl
         try {
+          console.log(`[Dashboard] Starting crawl for audit ${audit.id}...`);
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
           
@@ -192,15 +225,35 @@ export default function Dashboard() {
           
           clearTimeout(timeoutId);
           
+          console.log(`[Dashboard] Crawl start response status: ${crawlResponse.status}`);
+          
           if (crawlResponse.ok) {
             const result = await crawlResponse.json();
+            console.log(`[Dashboard] Crawl started successfully:`, result);
+            // Immediately refresh to get actual state
+            fetchData();
             alert(`✅ Project created! Starting automatic crawl...\n\n${result.message || `Found ${result.sitemapsFound || 0} sitemap(s), queued ${result.urlsQueued || 0} URLs to crawl`}`);
           } else {
             const error = await crawlResponse.json().catch(() => ({ error: 'Unknown error' }));
+            console.error(`[Dashboard] Crawl start failed with status ${crawlResponse.status}:`, error);
+            // Revert optimistic update on error
+            setOptimisticAudits(prev => {
+              const next = new Set(prev);
+              next.delete(audit.id);
+              return next;
+            });
+            fetchData(); // Refresh to show actual state
             alert(`Project created, but failed to start crawl: ${error.error || 'Unknown error'}`);
           }
         } catch (crawlError) {
-          console.error('Error starting crawl:', crawlError);
+          console.error('[Dashboard] Error starting crawl:', crawlError);
+          // Revert optimistic update on error
+          setOptimisticAudits(prev => {
+            const next = new Set(prev);
+            next.delete(audit.id);
+            return next;
+          });
+          fetchData(); // Refresh to show actual state
           if (crawlError instanceof Error && crawlError.name === 'AbortError') {
             alert('Crawl start timed out. The crawl may still be starting in the background. Check the dashboard in a few moments.');
           } else {
@@ -210,7 +263,7 @@ export default function Dashboard() {
 
         setNewProjectUrl('');
         setNewProjectName('');
-        fetchData();
+        // fetchData() is called above after crawl response
       } else {
         const error = await response.json();
         alert(error.error || 'Failed to create project');
@@ -227,6 +280,18 @@ export default function Dashboard() {
     if (startingCrawl === auditId) return; // Prevent double-click
     
     setStartingCrawl(auditId);
+    
+    // Optimistically update UI to show control buttons immediately
+    setOptimisticAudits(prev => new Set(prev).add(auditId));
+    setProjects(prevProjects => prevProjects.map(p => ({
+      ...p,
+      audits: p.audits?.map(a => 
+        a.id === auditId 
+          ? { ...a, status: 'in_progress' as const }
+          : a
+      ) || [],
+    })));
+    
     try {
       const response = await fetch(`/api/audits/${auditId}/start-auto`, {
         method: 'POST',
@@ -238,11 +303,25 @@ export default function Dashboard() {
         fetchData();
       } else {
         const error = await response.json();
+        // Revert optimistic update on error
+        setOptimisticAudits(prev => {
+          const next = new Set(prev);
+          next.delete(auditId);
+          return next;
+        });
         alert(`Failed to start crawl: ${error.error}`);
+        fetchData(); // Refresh to show actual state
       }
     } catch (error) {
       console.error('Error starting automatic crawl:', error);
+      // Revert optimistic update on error
+      setOptimisticAudits(prev => {
+        const next = new Set(prev);
+        next.delete(auditId);
+        return next;
+      });
       alert('Failed to start automatic crawl');
+      fetchData(); // Refresh to show actual state
     } finally {
       setStartingCrawl(null);
     }
@@ -472,8 +551,9 @@ export default function Dashboard() {
             ) : (
               (() => {
                 const mostRecent = projects[0];
+                // Include optimistic audits (those we've optimistically marked as in_progress)
                 const activeAudits = mostRecent.audits?.filter((a) => 
-                  a.status === 'in_progress' || a.status === 'paused'
+                  a.status === 'in_progress' || a.status === 'paused' || optimisticAudits.has(a.id)
                 ) || [];
                 const pendingApprovalAudits = mostRecent.audits?.filter((a) => 
                   a.status === 'pending_approval'
@@ -549,9 +629,30 @@ export default function Dashboard() {
                         ))}
                       </div>
                     ) : null}
-                    {activeAudits.length > 0 ? (
+                    {(() => {
+                      // Combine activeAudits from activity state with optimistic audits from project
+                      const optimisticAuditsList = mostRecent.audits?.filter(a => optimisticAudits.has(a.id)).map(a => ({
+                        ...a,
+                        status: 'in_progress' as const,
+                        project: { name: mostRecent.name, domain: mostRecent.domain },
+                        pagesCrawled: 0,
+                        pagesTotal: 0,
+                      })) || [];
+                      const allActiveAudits = [...activeAudits, ...optimisticAuditsList.filter(a => !activeAudits.some(active => active.id === a.id))];
+                      return allActiveAudits.length > 0;
+                    })() ? (
                       <div className="space-y-3">
-                        {activeAudits.map((audit) => (
+                        {(() => {
+                          // Combine activeAudits from activity state with optimistic audits from project
+                          const optimisticAuditsList = mostRecent.audits?.filter(a => optimisticAudits.has(a.id)).map(a => ({
+                            ...a,
+                            status: 'in_progress' as const,
+                            project: { name: mostRecent.name, domain: mostRecent.domain },
+                            pagesCrawled: 0,
+                            pagesTotal: 0,
+                          })) || [];
+                          return [...activeAudits, ...optimisticAuditsList.filter(a => !activeAudits.some(active => active.id === a.id))];
+                        })().map((audit) => (
                           <div
                             key={audit.id}
                             className={`rounded border p-3 ${
@@ -595,10 +696,12 @@ export default function Dashboard() {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     if (!confirm('Pause the crawl? It can be resumed later.')) return;
+                                    
+                                    setActionLoading({ auditId: audit.id, action: 'pause' });
                                     try {
                                       const res = await fetch(`/api/audits/${audit.id}/pause`, { method: 'POST' });
                                       if (res.ok) {
-                                        fetchData();
+                                        await fetchData(); // Refresh to get actual state
                                       } else {
                                         const error = await res.json();
                                         alert(error.error || 'Failed to pause crawl');
@@ -606,11 +709,14 @@ export default function Dashboard() {
                                     } catch (error) {
                                       console.error('Error pausing crawl:', error);
                                       alert('Failed to pause crawl');
+                                    } finally {
+                                      setActionLoading(null);
                                     }
                                   }}
-                                  className="flex-1 rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white hover:bg-yellow-700"
+                                  disabled={actionLoading !== null}
+                                  className="flex-1 rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white hover:bg-yellow-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  ⏸️ Pause
+                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'pause' ? '⏳...' : '⏸️ Pause'}
                                 </button>
                               )}
                               {audit.status === 'paused' && (
@@ -618,10 +724,12 @@ export default function Dashboard() {
                                   onClick={async (e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    
+                                    setActionLoading({ auditId: audit.id, action: 'resume' });
                                     try {
                                       const res = await fetch(`/api/audits/${audit.id}/resume`, { method: 'POST' });
                                       if (res.ok) {
-                                        fetchData();
+                                        await fetchData(); // Refresh to get actual state
                                       } else {
                                         const error = await res.json();
                                         alert(error.error || 'Failed to resume crawl');
@@ -629,11 +737,14 @@ export default function Dashboard() {
                                     } catch (error) {
                                       console.error('Error resuming crawl:', error);
                                       alert('Failed to resume crawl');
+                                    } finally {
+                                      setActionLoading(null);
                                     }
                                   }}
-                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700"
+                                  disabled={actionLoading !== null}
+                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  ▶️ Resume
+                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'resume' ? '⏳...' : '▶️ Resume'}
                                 </button>
                               )}
                               <button
@@ -641,10 +752,12 @@ export default function Dashboard() {
                                   e.preventDefault();
                                   e.stopPropagation();
                                   if (!confirm('Stop the crawl? All queued jobs will be removed and this crawl CANNOT be resumed. Use Pause if you want to resume later.')) return;
+                                  
+                                  setActionLoading({ auditId: audit.id, action: 'stop' });
                                   try {
                                     const res = await fetch(`/api/audits/${audit.id}/stop`, { method: 'POST' });
                                     if (res.ok) {
-                                      fetchData();
+                                      await fetchData(); // Refresh to get actual state
                                     } else {
                                       const error = await res.json();
                                       alert(error.error || 'Failed to stop crawl');
@@ -652,11 +765,14 @@ export default function Dashboard() {
                                   } catch (error) {
                                     console.error('Error stopping crawl:', error);
                                     alert('Failed to stop crawl');
+                                  } finally {
+                                    setActionLoading(null);
                                   }
                                 }}
-                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700"
+                                disabled={actionLoading !== null}
+                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                ⏹️ Stop
+                                {actionLoading?.auditId === audit.id && actionLoading?.action === 'stop' ? '⏳...' : '⏹️ Stop'}
                               </button>
                               <Link
                                 href={`/audits/${audit.id}`}

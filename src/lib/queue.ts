@@ -98,13 +98,70 @@ function createQueueInstance(): QueueType<CrawlJob> {
 
 export const crawlQueue = getQueue();
 
+/**
+ * Handle Redis storage limit - pause all audits and drain queue
+ * This allows current jobs to complete and frees up Redis memory
+ */
+async function handleRedisStorageLimit() {
+  try {
+    const { prisma } = await import('./prisma');
+    
+    // Pause all in_progress audits
+    const inProgressAudits = await prisma.audit.findMany({
+      where: { status: 'in_progress' },
+      select: { id: true },
+    });
+    
+    if (inProgressAudits.length > 0) {
+      console.log(`[Queue] Pausing ${inProgressAudits.length} in-progress audit(s) due to Redis storage limit...`);
+      await prisma.audit.updateMany({
+        where: { status: 'in_progress' },
+        data: { status: 'paused' },
+      });
+      
+      // Add audit logs
+      for (const audit of inProgressAudits) {
+        const { addAuditLog } = await import('./audit-logs');
+        addAuditLog(audit.id, 'setup', '⚠️ Audit paused: Redis storage limit reached. Queue will be drained.', {
+          reason: 'redis_storage_limit',
+        });
+      }
+    }
+    
+    // Get current queue stats
+    const [waiting, active, delayed] = await Promise.all([
+      crawlQueue.getWaitingCount(),
+      crawlQueue.getActiveCount(),
+      crawlQueue.getDelayedCount(),
+    ]);
+    
+    console.log(`[Queue] Current queue state: waiting=${waiting}, active=${active}, delayed=${delayed}`);
+    console.log(`[Queue] ⚠️  All audits paused. Processing ${active} active jobs to drain queue...`);
+    console.log(`[Queue] ⚠️  After active jobs complete, ${waiting + delayed} jobs will remain in queue but won't be processed.`);
+    console.log(`[Queue] ⚠️  Please increase Redis storage or clear old jobs, then resume audits manually.`);
+    
+  } catch (error) {
+    console.error('[Queue] Error handling Redis storage limit:', error);
+  }
+}
+
 // Only register event listeners once to prevent duplicates and memory leaks
 if (!global.__queueEventListenersRegistered) {
   global.__queueEventListenersRegistered = true;
   
-  // Handle Redis connection errors
-  crawlQueue.on('error', (error) => {
-    console.error('[Queue] Redis connection error:', error);
+  // Handle Redis connection errors and storage limits
+  crawlQueue.on('error', async (error) => {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('[Queue] Redis error:', errorMessage);
+    
+    // Check if it's a storage/memory error (Redis OOM)
+    if (errorMessage.includes('OOM') || 
+        errorMessage.includes('maxmemory') || 
+        errorMessage.includes('out of memory') ||
+        errorMessage.includes('ERR maxmemory')) {
+      console.error('[Queue] ⚠️  Redis storage limit reached! Pausing all audits and draining queue...');
+      await handleRedisStorageLimit();
+    }
   });
 
   crawlQueue.on('waiting', (jobId) => {
@@ -188,9 +245,7 @@ if (!global.__queueProcessorRegistered) {
     }
   }
   
-  console.log(`[Queue] 🚀 Processing job ${job.id}: ${url} (audit: ${auditId})`);
-  
-  // CRITICAL: Check if audit exists BEFORE any processing
+  // CRITICAL: Check if audit exists and is not stopped/paused BEFORE any processing or logging
   const { prisma: prismaCheck } = await import('./prisma');
   let auditCheck;
   try {
@@ -204,28 +259,22 @@ if (!global.__queueProcessorRegistered) {
     return null;
   }
 
-  // If audit doesn't exist (was deleted), skip job immediately
+  // If audit doesn't exist (was deleted), skip job immediately (no log to reduce noise)
   if (!auditCheck) {
-    console.log(`[Queue] ⚠️  Audit ${auditId} not found (deleted), skipping job ${job.id}`);
     // Try to remove job (only works for waiting/delayed, not active)
     try {
       const state = await job.getState();
       if (state === 'waiting' || state === 'delayed') {
         await job.remove();
-      } else {
-        // Active job - can't remove, but we return null so it won't save results
-        console.log(`[Queue] Job ${job.id} is active, cannot remove but will skip processing`);
       }
-    } catch (error) {
+    } catch {
       // Job might be in a state we can't remove
-      console.log(`[Queue] Could not remove job ${job.id}, but will skip processing`);
     }
-    return null; // Skip processing
+    return null; // Skip processing silently
   }
 
-  // If audit is paused or stopped, skip processing
+  // If audit is paused or stopped, skip processing immediately (no log to reduce noise)
   if (auditCheck.status === 'paused' || auditCheck.status === 'stopped') {
-    console.log(`[Queue] ⏸️  Audit ${auditId} is ${auditCheck.status}, skipping job ${job.id}`);
     // Try to remove job from queue (only if not active)
     try {
       const state = await job.getState();
@@ -235,8 +284,11 @@ if (!global.__queueProcessorRegistered) {
     } catch {
       // Job might be active, can't remove it
     }
-    return null;
+    return null; // Skip processing silently
   }
+  
+  // Only log "Processing" if we're actually going to process the job
+  console.log(`[Queue] 🚀 Processing job ${job.id}: ${url} (audit: ${auditId})`);
   
   try {
     // Import here to avoid circular dependencies
@@ -261,12 +313,24 @@ if (!global.__queueProcessorRegistered) {
       
       // Get crawl delay from robots.txt (for rate limiting between jobs)
       // Use crawlDelay from robots.txt, default to 0.5 seconds if not set
+      // IMPORTANT: Cap crawl delay to prevent extremely slow crawling (some sites set 5+ minutes!)
+      // Maximum delay is 5 seconds - if robots.txt specifies more, cap it
       const defaultCrawlDelay = parseFloat(process.env.CRAWL_DELAY_SECONDS || '0.5');
-      crawlDelay = robotsTxt.getCrawlDelay() || defaultCrawlDelay;
+      const robotsCrawlDelay = robotsTxt.getCrawlDelay();
+      const maxCrawlDelay = parseFloat(process.env.MAX_CRAWL_DELAY_SECONDS || '5'); // Cap at 5 seconds max
+      crawlDelay = robotsCrawlDelay 
+        ? Math.min(robotsCrawlDelay, maxCrawlDelay) // Cap the delay
+        : defaultCrawlDelay;
+      
+      // Log if we're capping the delay
+      if (robotsCrawlDelay && robotsCrawlDelay > maxCrawlDelay) {
+        console.log(`[Queue] ⚠️  robots.txt specifies crawl-delay: ${robotsCrawlDelay}s, capping to ${maxCrawlDelay}s for reasonable performance`);
+      }
     } catch (error) {
       console.error(`[Queue] ❌ CRITICAL: Failed to get robots.txt for ${domainBaseUrl}:`, error);
       // Fail closed - if we can't check robots.txt, don't crawl
       console.log(`[Queue] 🚫 Cannot verify robots.txt, skipping crawl for safety: ${url}`);
+      addAuditLog(auditId, 'skipped', `Skipped (robots.txt check failed): ${url}`, { url, reason: 'robots.txt-failed', error: error instanceof Error ? error.message : String(error) });
       return null;
     }
     
@@ -289,6 +353,7 @@ if (!global.__queueProcessorRegistered) {
       console.error(`[Queue] ❌ CRITICAL: Error checking robots.txt for ${url}:`, error);
       // Fail closed - if check fails, don't crawl
       console.log(`[Queue] 🚫 Robots.txt check failed, skipping crawl for safety: ${url}`);
+      addAuditLog(auditId, 'skipped', `Skipped (robots.txt check error): ${url}`, { url, reason: 'robots.txt-error', error: error instanceof Error ? error.message : String(error) });
       return null;
     }
     
@@ -296,6 +361,7 @@ if (!global.__queueProcessorRegistered) {
     if (!isAllowed) {
       console.log(`[Queue] 🚫 URL disallowed by robots.txt, skipping crawl: ${url}`);
       console.log(`[Queue] 🚫 This URL should NOT have been queued. Check queuing logic for bugs.`);
+      addAuditLog(auditId, 'skipped', `Skipped by robots.txt: ${url}`, { url, reason: 'robots.txt' });
       // Don't throw error - just skip this job
       // This prevents retries and marks job as completed (skipped)
       // The job will be removed from queue automatically (removeOnComplete: true)
@@ -334,6 +400,7 @@ if (!global.__queueProcessorRegistered) {
     
     if (alreadyCrawled) {
       console.log(`[Queue] ⏭️  URL already crawled in database (audit or project within 14 days), skipping: ${url}`);
+      addAuditLog(auditId, 'skipped', `Skipped (already crawled): ${url}`, { url, reason: 'duplicate' });
       return null; // Skip this job - already crawled
     }
 
@@ -343,6 +410,17 @@ if (!global.__queueProcessorRegistered) {
     if (finalCheck !== true) {
       console.log(`[Queue] 🚫 FINAL CHECK: URL disallowed by robots.txt, aborting crawl: ${url}`);
       console.log(`[Queue] 🚫 Final check result: ${finalCheck}`);
+      addAuditLog(auditId, 'skipped', `Skipped by robots.txt (final check): ${url}`, { url, reason: 'robots.txt' });
+      return null;
+    }
+    
+    // CRITICAL: Re-check audit status before crawling (stop might have been clicked)
+    const preCrawlAuditCheck = await prismaCheck.audit.findUnique({
+      where: { id: auditId },
+      select: { status: true },
+    });
+    if (!preCrawlAuditCheck || preCrawlAuditCheck.status === 'stopped' || preCrawlAuditCheck.status === 'paused') {
+      console.log(`[Queue] ⏸️  Audit ${auditId} is ${preCrawlAuditCheck?.status || 'not found'}, aborting job ${job.id} before crawl`);
       return null;
     }
     
@@ -354,15 +432,45 @@ if (!global.__queueProcessorRegistered) {
       await new Promise(resolve => setTimeout(resolve, delayMs));
     }
     
+    // CRITICAL: Re-check audit status after delay (stop might have been clicked during delay)
+    const postDelayAuditCheck = await prismaCheck.audit.findUnique({
+      where: { id: auditId },
+      select: { status: true },
+    });
+    if (!postDelayAuditCheck || postDelayAuditCheck.status === 'stopped' || postDelayAuditCheck.status === 'paused') {
+      console.log(`[Queue] ⏸️  Audit ${auditId} is ${postDelayAuditCheck?.status || 'not found'}, aborting job ${job.id} after delay`);
+      return null;
+    }
+    
     // Crawl the URL
     console.log(`[Queue] Crawling: ${url}`);
     const seoData = await crawlUrl(url);
+    
+    // CRITICAL: Re-check audit status after crawling (stop might have been clicked during crawl)
+    const postCrawlAuditCheck = await prismaCheck.audit.findUnique({
+      where: { id: auditId },
+      select: { status: true },
+    });
+    if (!postCrawlAuditCheck || postCrawlAuditCheck.status === 'stopped' || postCrawlAuditCheck.status === 'paused') {
+      console.log(`[Queue] ⏸️  Audit ${auditId} is ${postCrawlAuditCheck?.status || 'not found'}, aborting job ${job.id} after crawl (not saving)`);
+      return null;
+    }
     
     // Skip saving 404 pages - they're errors, not valid pages
     if (seoData.statusCode === 404) {
       console.log(`[Queue] ⚠️  404 Not Found - skipping save for: ${url}`);
       addAuditLog(auditId, 'skipped', `404 Not Found: ${url}`, { url, statusCode: 404, reason: '404' });
       // Still return null so job is marked as completed, but don't save to database
+      return null;
+    }
+    
+    // CRITICAL: Re-check audit status before saving (stop might have been clicked)
+    const preSaveAuditCheck = await prismaCheck.audit.findUnique({
+      where: { id: auditId },
+      select: { status: true },
+    });
+    if (!preSaveAuditCheck || preSaveAuditCheck.status === 'stopped' || preSaveAuditCheck.status === 'paused') {
+      console.log(`[Queue] ⏸️  Audit ${auditId} is ${preSaveAuditCheck?.status || 'not found'}, aborting job ${job.id} before save`);
       return null;
     }
     
@@ -376,6 +484,7 @@ if (!global.__queueProcessorRegistered) {
         addAuditLog(auditId, 'crawled', `Crawled: ${url}`, { url, statusCode: seoData.statusCode, title: seoData.title });
       } else {
         console.log(`[Queue] ⚠️  Duplicate crawl result, skipping save and increment for: ${url}`);
+        addAuditLog(auditId, 'skipped', `Skipped (duplicate crawl result): ${url}`, { url, reason: 'duplicate-result' });
         // Don't increment pagesCrawled if it was a duplicate
         return null;
       }
@@ -399,6 +508,16 @@ if (!global.__queueProcessorRegistered) {
       throw error; // Re-throw other errors
     }
     
+    // CRITICAL: Re-check audit status before updating progress (stop might have been clicked)
+    const preUpdateAuditCheck = await prismaCheck.audit.findUnique({
+      where: { id: auditId },
+      select: { status: true },
+    });
+    if (!preUpdateAuditCheck || preUpdateAuditCheck.status === 'stopped' || preUpdateAuditCheck.status === 'paused') {
+      console.log(`[Queue] ⏸️  Audit ${auditId} is ${preUpdateAuditCheck?.status || 'not found'}, aborting job ${job.id} before progress update`);
+      return null;
+    }
+    
     // Update audit progress (check if audit still exists)
     // Only increment if we actually saved a crawl result (crawlResult is not null)
     let updatedAudit;
@@ -412,9 +531,9 @@ if (!global.__queueProcessorRegistered) {
         },
       });
     } catch (error: any) {
-      // If audit was deleted, log and continue
+      // If audit was deleted or stopped, log and continue
       if (error?.code === 'P2025' || error?.code === 'P2003') {
-        console.log(`[Queue] ⚠️  Audit ${auditId} was deleted, cannot update progress`);
+        console.log(`[Queue] ⚠️  Audit ${auditId} was deleted or stopped, cannot update progress`);
         // Don't return crawlResult - it wasn't saved anyway
         return null; // Skip this job
       }
@@ -433,9 +552,14 @@ if (!global.__queueProcessorRegistered) {
     const baseUrl = new URL(url).origin;
     // Use crawlDelay from robots.txt, default to 0.5 seconds if not set (faster crawling)
     // Can be overridden with CRAWL_DELAY_SECONDS environment variable
+    // IMPORTANT: Cap crawl delay to prevent extremely slow crawling
     // Note: crawlDelay is already defined above in the processor function
     const defaultCrawlDelay = parseFloat(process.env.CRAWL_DELAY_SECONDS || '0.5');
-    const linkCrawlDelay = robotsTxt.getCrawlDelay() || defaultCrawlDelay;
+    const maxCrawlDelay = parseFloat(process.env.MAX_CRAWL_DELAY_SECONDS || '5'); // Cap at 5 seconds max
+    const robotsLinkDelay = robotsTxt.getCrawlDelay();
+    const linkCrawlDelay = robotsLinkDelay 
+      ? Math.min(robotsLinkDelay, maxCrawlDelay) // Cap the delay
+      : defaultCrawlDelay;
     
     let newJobsQueued = 0;
     let disallowedCount = 0;
@@ -499,7 +623,10 @@ if (!global.__queueProcessorRegistered) {
         // This creates a unique job ID based on URL + auditId, preventing duplicates
         const { normalizeUrl: normalizeUrlForJob } = await import('./robots');
         const normalizedLinkUrl = normalizeUrlForJob(link.href, baseUrl);
-        const jobId = `${auditId}:${Buffer.from(normalizedLinkUrl).toString('base64').slice(0, 50)}`; // Unique job ID
+        // Use SHA-256 hash to create unique, fixed-length jobId (prevents collisions from truncation)
+        const { createHash } = await import('crypto');
+        const urlHash = createHash('sha256').update(normalizedLinkUrl).digest('base64').slice(0, 32);
+        const jobId = `${auditId}:${urlHash}`; // Unique job ID
         
         try {
           // Don't add delay when queuing - delay is handled by the processor
@@ -523,27 +650,23 @@ if (!global.__queueProcessorRegistered) {
           // Always add audit log for all queued jobs
           addAuditLog(auditId, 'queued', `Queued: ${link.href}`, { url: link.href, jobId: job.id, source: 'link-following' });
           
-          // CRITICAL: Set pagesTotal = count of queued logs (no math, no increment, just count and set)
-          try {
-            const queuedLogCount = await prisma.auditLog.count({
-              where: {
-                auditId,
-                category: 'queued',
-              },
-            });
-            await prisma.audit.update({
-              where: { id: auditId },
-              data: {
-                pagesTotal: queuedLogCount,
-              },
-            });
-          } catch (error) {
-            // Non-critical - log but don't fail
-            console.error(`[Queue] Failed to update pagesTotal for ${link.href}:`, error);
-          }
+          // Note: pagesTotal is updated by check-completion route as: crawled + skipped + queued_in_redis
         } catch (error: any) {
+          const errorMessage = error?.message || String(error);
+          
+          // Check for Redis storage limit errors
+          if (errorMessage.includes('OOM') || 
+              errorMessage.includes('maxmemory') || 
+              errorMessage.includes('out of memory') ||
+              errorMessage.includes('ERR maxmemory')) {
+            console.error(`[Queue] ⚠️  Redis storage limit reached while queuing link: ${link.href}`);
+            console.error(`[Queue] ⚠️  Stopping link following for this URL. Active jobs will continue to drain queue.`);
+            // Don't throw - just stop following links for this URL
+            break;
+          }
+          
           // If job already exists (duplicate jobId), skip it
-          if (error?.message?.includes('already exists') || error?.code === 'DUPLICATE_JOB') {
+          if (errorMessage.includes('already exists') || error?.code === 'DUPLICATE_JOB') {
             console.log(`[Queue] ⏭️  Skipping duplicate job for ${normalizedLinkUrl}`);
             continue;
           }
@@ -556,8 +679,7 @@ if (!global.__queueProcessorRegistered) {
       console.log(`[Queue] Skipped ${disallowedCount} disallowed links from ${url}`);
     }
     
-    // Note: pagesTotal is updated per-URL when each queued log is added (see line ~499)
-    // No batch-level update needed - pagesTotal = total queued log count
+    // Note: pagesTotal is updated by check-completion route as: crawled + skipped + queued_in_redis
     if (newJobsQueued > 0) {
       console.log(`[Queue] Queued ${newJobsQueued} new links from ${url} (${disallowedCount} skipped by robots.txt)`);
     }

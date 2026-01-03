@@ -28,6 +28,8 @@ export default function AllProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [startingCrawl, setStartingCrawl] = useState<string | null>(null);
+  const [optimisticAudits, setOptimisticAudits] = useState<Set<string>>(new Set()); // Track audits we've optimistically marked as in_progress
+  const [actionLoading, setActionLoading] = useState<{ auditId: string; action: 'pause' | 'resume' | 'stop' } | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -62,6 +64,22 @@ export default function AllProjectsPage() {
       const pendingAudit = project.audits?.find((a) => a.status === 'pending');
       
       if (pendingAudit) {
+        // Optimistically update UI to show control buttons immediately
+        setOptimisticAudits(prev => new Set(prev).add(pendingAudit.id));
+        setProjects(prevProjects => prevProjects.map(p => {
+          if (p.id === projectId && p.audits) {
+            return {
+              ...p,
+              audits: p.audits.map(a => 
+                a.id === pendingAudit.id 
+                  ? { ...a, status: 'in_progress' as const }
+                  : a
+              ),
+            };
+          }
+          return p;
+        }));
+        
         const response = await fetch(`/api/audits/${pendingAudit.id}/start-auto`, {
           method: 'POST',
           signal: AbortSignal.timeout(10000), // 10 second timeout (should be fast now)
@@ -70,9 +88,15 @@ export default function AllProjectsPage() {
         if (response.ok) {
           const result = await response.json();
           console.log('Crawl started:', result);
-          fetchProjects(); // Refresh immediately
+          fetchProjects(); // Refresh to get actual state
         } else {
           const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+          // Revert optimistic update on error
+          setOptimisticAudits(prev => {
+            const next = new Set(prev);
+            next.delete(pendingAudit.id);
+            return next;
+          });
           if (response.status === 409) {
             // Conflict - already in progress
             alert('Crawl is already in progress for this project');
@@ -94,6 +118,22 @@ export default function AllProjectsPage() {
         
         if (createResponse.ok) {
           const { audit } = await createResponse.json();
+          
+          // Optimistically update UI to show control buttons immediately
+          setOptimisticAudits(prev => new Set(prev).add(audit.id));
+          setProjects(prevProjects => prevProjects.map(p => {
+            if (p.id === projectId) {
+              return {
+                ...p,
+                audits: [
+                  { ...audit, status: 'in_progress' as const },
+                  ...(p.audits || []),
+                ],
+              };
+            }
+            return p;
+          }));
+          
           const startResponse = await fetch(`/api/audits/${audit.id}/start-auto`, {
             method: 'POST',
             signal: AbortSignal.timeout(30000), // 30 second timeout
@@ -102,10 +142,17 @@ export default function AllProjectsPage() {
           if (startResponse.ok) {
             const result = await startResponse.json();
             console.log('Crawl started:', result);
-            fetchProjects();
+            fetchProjects(); // Refresh to get actual state
           } else {
             const error = await startResponse.json().catch(() => ({ error: 'Unknown error' }));
+            // Revert optimistic update on error
+            setOptimisticAudits(prev => {
+              const next = new Set(prev);
+              next.delete(audit.id);
+              return next;
+            });
             alert(`Failed to start crawl: ${error.error || 'Unknown error'}`);
+            fetchProjects(); // Refresh to show current state
           }
         } else {
           alert('Failed to create audit');
@@ -193,17 +240,20 @@ export default function AllProjectsPage() {
             {projects.map((project) => {
               const lastCrawled = getLastCrawledDate(project);
               const hasPendingAudit = project.audits?.some((a) => a.status === 'pending');
-              const activeAudits = project.audits?.filter((a) => a.status === 'in_progress') || [];
+              // Include optimistic audits (those we've optimistically marked as in_progress)
+              const activeAudits = project.audits?.filter((a) => 
+                a.status === 'in_progress' || optimisticAudits.has(a.id)
+              ) || [];
               const pendingApprovalAudits = project.audits?.filter((a) => a.status === 'pending_approval') || [];
               
               return (
                   <div
                     key={project.id}
-                    className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900"
+                    className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm transition-all hover:border-zinc-300 hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
                   >
                     <Link
                       href={`/projects/${project.id}`}
-                      className="block"
+                      className="block cursor-pointer"
                     >
                       <div className="mb-4">
                         <h3 className="text-xl font-semibold text-black dark:text-zinc-50">
@@ -340,10 +390,12 @@ export default function AllProjectsPage() {
                                     e.preventDefault();
                                     e.stopPropagation();
                                     if (!confirm('Pause the crawl? It can be resumed later.')) return;
+                                    
+                                    setActionLoading({ auditId: audit.id, action: 'pause' });
                                     try {
                                       const res = await fetch(`/api/audits/${audit.id}/pause`, { method: 'POST' });
                                       if (res.ok) {
-                                        fetchProjects();
+                                        await fetchProjects(); // Refresh to get actual state
                                       } else {
                                         const error = await res.json();
                                         alert(error.error || 'Failed to pause crawl');
@@ -351,11 +403,14 @@ export default function AllProjectsPage() {
                                     } catch (error) {
                                       console.error('Error pausing crawl:', error);
                                       alert('Failed to pause crawl');
+                                    } finally {
+                                      setActionLoading(null);
                                     }
                                   }}
-                                  className="flex-1 rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white hover:bg-yellow-700"
+                                  disabled={actionLoading !== null}
+                                  className="flex-1 rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white hover:bg-yellow-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  ⏸️ Pause
+                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'pause' ? '⏳...' : '⏸️ Pause'}
                                 </button>
                               )}
                               {audit.status === 'paused' && (
@@ -363,10 +418,12 @@ export default function AllProjectsPage() {
                                   onClick={async (e) => {
                                     e.preventDefault();
                                     e.stopPropagation();
+                                    
+                                    setActionLoading({ auditId: audit.id, action: 'resume' });
                                     try {
                                       const res = await fetch(`/api/audits/${audit.id}/resume`, { method: 'POST' });
                                       if (res.ok) {
-                                        fetchProjects();
+                                        await fetchProjects(); // Refresh to get actual state
                                       } else {
                                         const error = await res.json();
                                         alert(error.error || 'Failed to resume crawl');
@@ -374,11 +431,14 @@ export default function AllProjectsPage() {
                                     } catch (error) {
                                       console.error('Error resuming crawl:', error);
                                       alert('Failed to resume crawl');
+                                    } finally {
+                                      setActionLoading(null);
                                     }
                                   }}
-                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700"
+                                  disabled={actionLoading !== null}
+                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
                                 >
-                                  ▶️ Resume
+                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'resume' ? '⏳...' : '▶️ Resume'}
                                 </button>
                               )}
                               <button
@@ -386,10 +446,12 @@ export default function AllProjectsPage() {
                                   e.preventDefault();
                                   e.stopPropagation();
                                   if (!confirm('Stop the crawl? All queued jobs will be removed and this crawl CANNOT be resumed. Use Pause if you want to resume later.')) return;
+                                  
+                                  setActionLoading({ auditId: audit.id, action: 'stop' });
                                   try {
                                     const res = await fetch(`/api/audits/${audit.id}/stop`, { method: 'POST' });
                                     if (res.ok) {
-                                      fetchProjects();
+                                      await fetchProjects(); // Refresh to get actual state
                                     } else {
                                       const error = await res.json();
                                       alert(error.error || 'Failed to stop crawl');
@@ -397,11 +459,14 @@ export default function AllProjectsPage() {
                                   } catch (error) {
                                     console.error('Error stopping crawl:', error);
                                     alert('Failed to stop crawl');
+                                  } finally {
+                                    setActionLoading(null);
                                   }
                                 }}
-                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700"
+                                disabled={actionLoading !== null}
+                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                ⏹️ Stop
+                                {actionLoading?.auditId === audit.id && actionLoading?.action === 'stop' ? '⏳...' : '⏹️ Stop'}
                               </button>
                               <Link
                                 href={`/audits/${audit.id}`}
@@ -424,7 +489,7 @@ export default function AllProjectsPage() {
                           }
                           handleStartAutoCrawl(project.id);
                         }}
-                        disabled={startingCrawl === project.id}
+                        disabled={startingCrawl === project.id || optimisticAudits.has(project.audits?.[0]?.id || '')}
                         className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         {startingCrawl === project.id

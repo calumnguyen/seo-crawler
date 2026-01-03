@@ -94,19 +94,27 @@ export default function UsersPage() {
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
       <main className="container mx-auto max-w-7xl px-4 py-8">
         {/* Header */}
-        <div className="mb-8">
-          <Link
-            href="/"
-            className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
-          >
-            ← Back to Dashboard
-          </Link>
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <Link
+              href="/"
+              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
+            >
+              ← Back to Dashboard
+            </Link>
           <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
             Users
           </h1>
           <p className="text-lg text-zinc-600 dark:text-zinc-400">
             Manage system users
           </p>
+          </div>
+          <Link
+            href="/"
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
+          >
+            ← Back to Dashboard
+          </Link>
         </div>
 
         {/* Error Message */}

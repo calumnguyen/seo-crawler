@@ -20,16 +20,24 @@ export async function GET() {
             domain: true,
           },
         },
-        _count: {
-          select: {
-            crawlResults: true,
-          },
-        },
       },
       orderBy: {
         startedAt: 'desc',
       },
     });
+
+    // Calculate actual pagesCrawled from database count for each audit
+    const activeAuditsWithActualCounts = await Promise.all(
+      activeAudits.map(async (audit) => {
+        const actualPagesCrawled = await prisma.crawlResult.count({
+          where: { auditId: audit.id },
+        });
+        return {
+          ...audit,
+          pagesCrawled: actualPagesCrawled,
+        };
+      })
+    );
 
     // Get recent crawl results (last 50)
     const recentCrawls = await prisma.crawlResult.findMany({
@@ -52,7 +60,7 @@ export async function GET() {
     });
 
     return NextResponse.json({
-      activeAudits,
+      activeAudits: activeAuditsWithActualCounts,
       recentCrawls,
     });
   } catch (error) {

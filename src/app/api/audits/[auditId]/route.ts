@@ -31,7 +31,16 @@ export async function GET(
       );
     }
 
-    return NextResponse.json(audit);
+    // Calculate actual pagesCrawled from database count (more accurate than stored counter)
+    const actualPagesCrawled = await prisma.crawlResult.count({
+      where: { auditId },
+    });
+
+    // Return audit with actual pagesCrawled count
+    return NextResponse.json({
+      ...audit,
+      pagesCrawled: actualPagesCrawled,
+    });
   } catch (error) {
     console.error('Error fetching audit:', error);
     return NextResponse.json(
