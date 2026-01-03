@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+. "$(dirname -- "$0")/_/husky.sh"
+
+# Ensure Prisma Client is generated (catches missing Prisma Client issues)
+echo "🔍 Ensuring Prisma Client is generated..."
+npx prisma generate
+if [ $? -ne 0 ]; then
+  echo "❌ Prisma Client generation failed. Commit aborted."
+  exit 1
+fi
+
+# Run TypeScript type checking first (this will catch implicit any types)
+echo "🔍 Running TypeScript type check..."
+npx tsc --noEmit
+if [ $? -ne 0 ]; then
+  echo "❌ TypeScript errors found. Commit aborted."
+  exit 1
+fi
+
+# Run lint-staged (ESLint and formatting)
+echo "🔍 Running lint-staged..."
+npx lint-staged
+if [ $? -ne 0 ]; then
+  echo "❌ Linting errors found. Commit aborted."
+  exit 1
+fi
+
+# Run build check (catches build errors that would fail on Vercel)
+echo "🔍 Running build check..."
+npm run build
+if [ $? -ne 0 ]; then
+  echo "❌ Build failed. Commit aborted."
+  echo "💡 This build error would also fail on Vercel. Please fix before committing."
+  exit 1
+fi
+
+echo "✅ All checks passed!"

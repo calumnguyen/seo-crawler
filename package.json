@@ -1,0 +1,53 @@
+{
+  "name": "seo-web-crawler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build --webpack",
+    "start": "next start",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prepare": "husky",
+    "postinstall": "prisma generate",
+    "worker": "node scripts/queue-worker.js"
+  },
+  "dependencies": {
+    "@magic-sdk/admin": "^2.8.2",
+    "@neondatabase/serverless": "^1.0.2",
+    "@prisma/adapter-neon": "^7.2.0",
+    "@prisma/client": "^7.2.0",
+    "bull": "^4.16.5",
+    "cheerio": "^1.1.2",
+    "dotenv": "^17.2.3",
+    "ioredis": "^5.8.2",
+    "magic-sdk": "^32.0.0",
+    "next": "16.1.1",
+    "node-html-parser": "^7.0.1",
+    "prisma": "^7.2.0",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "robots-parser": "^3.0.1",
+    "ws": "^8.18.3",
+    "xml2js": "^0.6.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.2.7",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "lint-staged": {
+    "*.{js,jsx,ts,tsx}": [
+      "eslint --fix"
+    ]
+  }
+}

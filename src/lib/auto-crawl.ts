@@ -1,0 +1,742 @@
+import { prisma } from './prisma';
+import { discoverSitemaps, parseSitemap } from './sitemap';
+import { getRobotsTxt, normalizeUrl } from './robots';
+import { crawlQueue } from './queue'; // Import queue directly
+import { shouldCrawlUrlInAudit } from './deduplication';
+import { addAuditLog } from './audit-logs';
+
+export async function startAutomaticCrawl(
+  auditId: string,
+  skipRecentUrls: string[] = [],
+  skipRobotsCheck: boolean = false, // If true, skip robots.txt requirement (for approved crawls)
+  allowResume: boolean = false // If true, allow resuming paused/stopped audits
+): Promise<{
+  sitemapsFound: number;
+  urlsQueued: number;
+  baseUrl: string;
+}> {
+  // CRITICAL: Add initial log immediately to ensure logs are visible from the start
+  addAuditLog(auditId, 'setup', `🚀 Starting automatic crawl for audit ${auditId}...`, { auditId, timestamp: new Date().toISOString() });
+  
+  // Get audit and project info
+  const audit = await prisma.audit.findUnique({
+    where: { id: auditId },
+    include: { project: true },
+  });
+
+  if (!audit) {
+    throw new Error('Audit not found');
+  }
+
+  const projectId = audit.projectId;
+
+  // Check if already in progress (prevent duplicates)
+  // But allow resume if explicitly requested (for paused/stopped audits)
+  if (audit.status === 'in_progress' && !allowResume) {
+    console.log(`[Auto-Crawl] Audit ${auditId} is already in progress, skipping`);
+    throw new Error('Crawl already in progress');
+  }
+  
+  // If not resuming, only allow starting from pending/pending_approval
+  // If resuming, allow paused/stopped status
+  if (!allowResume) {
+    if (audit.status !== 'pending' && audit.status !== 'pending_approval') {
+      throw new Error(`Cannot start crawl with status: ${audit.status}. Use resume endpoint for paused/stopped audits.`);
+    }
+  } else {
+    // When resuming, only allow paused status (stopped audits cannot be resumed)
+    if (audit.status !== 'paused' && audit.status !== 'in_progress') {
+      throw new Error(`Cannot resume audit with status: ${audit.status}. Only paused audits can be resumed. Stopped audits cannot be resumed.`);
+    }
+  }
+
+  const baseUrl = audit.project.baseUrl;
+  const projectDomain = audit.project.domain;
+
+  // STEP 0: Check for previous crawl attempts in this project within 14 days
+  // Get URLs that were already crawled to skip them
+  const fourteenDaysAgo = new Date();
+  fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+  
+  console.log(`[Auto-Crawl] Checking for previous crawl attempts in project ${projectId} within 14 days...`);
+  const previousAudits = await prisma.audit.findMany({
+    where: {
+      projectId: projectId,
+      id: { not: auditId }, // Exclude current audit
+      startedAt: {
+        gte: fourteenDaysAgo, // Started within 14 days
+      },
+    },
+    select: {
+      id: true,
+      startedAt: true,
+      status: true,
+    },
+    orderBy: {
+      startedAt: 'desc',
+    },
+  });
+
+  // Get all URLs that were crawled in previous audits within 14 days
+  const recentlyCrawledUrls: Set<string> = new Set();
+  if (previousAudits.length > 0) {
+    console.log(`[Auto-Crawl] Found ${previousAudits.length} previous audit(s) within 14 days`);
+    
+    const previousAuditIds = previousAudits.map((a: { id: string }) => a.id);
+    const recentCrawlResults = await prisma.crawlResult.findMany({
+      where: {
+        auditId: { in: previousAuditIds },
+        crawledAt: {
+          gte: fourteenDaysAgo, // Crawled within 14 days
+        },
+      },
+      select: {
+        url: true,
+      },
+    });
+
+    // Normalize URLs and add to set
+    for (const result of recentCrawlResults) {
+      const normalized = normalizeUrl(result.url, baseUrl);
+      recentlyCrawledUrls.add(normalized);
+    }
+    
+    console.log(`[Auto-Crawl] Found ${recentlyCrawledUrls.size} URLs already crawled in previous audits (will skip these)`);
+  } else {
+    console.log(`[Auto-Crawl] No previous audits found within 14 days - will crawl all URLs`);
+  }
+
+  // Get or create domain record
+  let domainId: string | undefined;
+  try {
+    const urlObj = new URL(baseUrl);
+    const domain = urlObj.hostname.replace(/^www\./, '');
+    
+    const domainRecord = await prisma.domain.upsert({
+      where: { domain },
+      update: {},
+      create: {
+        domain,
+        baseUrl: `${urlObj.protocol}//${urlObj.host}`,
+      },
+    });
+    domainId = domainRecord.id;
+  } catch (error) {
+    console.error('Error creating domain record:', error);
+  }
+
+  // STEP 1: Check robots.txt - REQUIRED before crawling (unless approved)
+  addAuditLog(auditId, 'setup', `🔍 Step 1: Checking robots.txt for ${baseUrl}...`, { baseUrl });
+  
+  let robotsTxt: Awaited<ReturnType<typeof getRobotsTxt>>;
+  let robotsTxtUrl: string | null = null;
+  let crawlDelay: number | null = null;
+  
+  if (skipRobotsCheck) {
+    // Skip robots.txt check (for approved crawls)
+    console.log(`[Auto-Crawl] ⚠️  Skipping robots.txt check (approved crawl)`);
+    robotsTxt = await getRobotsTxt(baseUrl); // Still get it for crawl delay, but don't require it
+    crawlDelay = robotsTxt.getCrawlDelay() || null;
+    const url = new URL(baseUrl);
+    const robotsTxtUrl = `${url.protocol}//${url.host}/robots.txt`;
+    addAuditLog(auditId, 'setup', `⚠️ robots.txt check skipped (approved crawl): ${robotsTxtUrl}`, { url: robotsTxtUrl, skipped: true });
+  } else {
+    // Check robots.txt - REQUIRED
+    console.log(`[Auto-Crawl] Checking robots.txt for ${baseUrl}...`);
+    
+    try {
+      const url = new URL(baseUrl);
+      robotsTxtUrl = `${url.protocol}//${url.host}/robots.txt`;
+      
+      const response = await fetch(robotsTxtUrl, {
+        headers: {
+          'User-Agent': 'SEO-Crawler/1.0',
+        },
+        signal: AbortSignal.timeout(10000), // 10 second timeout
+      });
+
+      if (response.ok) {
+        robotsTxt = await getRobotsTxt(baseUrl);
+        crawlDelay = robotsTxt.getCrawlDelay() || null;
+        console.log(`[Auto-Crawl] ✅ robots.txt found at ${robotsTxtUrl}`);
+        addAuditLog(auditId, 'setup', `✅ robots.txt fetched successfully: ${robotsTxtUrl}`, { url: robotsTxtUrl, success: true });
+        
+        // Update domain record with robots.txt URL and crawl delay
+        if (domainId) {
+          try {
+            await prisma.domain.update({
+              where: { id: domainId },
+              data: {
+                robotsTxtUrl: robotsTxtUrl,
+                crawlDelay: crawlDelay ? Math.round(crawlDelay) : null,
+              },
+            });
+            console.log(`[Auto-Crawl] ✅ Saved robots.txt URL and crawl delay to domain record`);
+          } catch (error) {
+            console.error(`[Auto-Crawl] Error updating domain with robots.txt info:`, error);
+          }
+        }
+      } else if (response.status === 404) {
+        // robots.txt not found - require approval
+        console.log(`[Auto-Crawl] ⚠️  robots.txt NOT FOUND at ${robotsTxtUrl} (404) - requires approval`);
+        addAuditLog(auditId, 'setup', `❌ robots.txt not found: ${robotsTxtUrl} (404)`, { url: robotsTxtUrl, success: false, error: '404 Not Found' });
+        await prisma.audit.update({
+          where: { id: auditId },
+          data: {
+            status: 'pending_approval',
+            startedAt: new Date(),
+          },
+        });
+        throw new Error('robots.txt not found - approval required before crawling');
+      } else {
+        // Other error - require approval
+        console.log(`[Auto-Crawl] ⚠️  Error fetching robots.txt: ${response.status} - requires approval`);
+        addAuditLog(auditId, 'setup', `❌ robots.txt fetch failed: ${robotsTxtUrl} (${response.status})`, { url: robotsTxtUrl, success: false, error: `HTTP ${response.status}` });
+        await prisma.audit.update({
+          where: { id: auditId },
+          data: {
+            status: 'pending_approval',
+            startedAt: new Date(),
+          },
+        });
+        throw new Error(`Failed to fetch robots.txt: ${response.status} - approval required`);
+      }
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      // If it's our custom error, re-throw it
+      if (errorMessage.includes('approval required') || errorMessage.includes('robots.txt not found')) {
+        throw error;
+      }
+      // Network/timeout errors - require approval
+      console.log(`[Auto-Crawl] ⚠️  Error checking robots.txt: ${errorMessage} - requires approval`);
+      addAuditLog(auditId, 'setup', `❌ robots.txt fetch error: ${robotsTxtUrl || 'unknown'} - ${errorMessage}`, { url: robotsTxtUrl || 'unknown', success: false, error: errorMessage });
+      await prisma.audit.update({
+        where: { id: auditId },
+        data: {
+          status: 'pending_approval',
+          startedAt: new Date(),
+        },
+      });
+      throw new Error(`Failed to check robots.txt: ${errorMessage} - approval required`);
+    }
+  }
+
+  // STEP 2: Discover sitemaps - REQUIRED before crawling
+  addAuditLog(auditId, 'setup', `🗺️  Step 2: Discovering sitemaps for ${baseUrl}...`, { baseUrl });
+  console.log(`[Auto-Crawl] Discovering sitemaps for ${baseUrl}...`);
+  let sitemapUrls: string[] = [];
+  try {
+    sitemapUrls = await discoverSitemaps(baseUrl);
+    console.log(`[Auto-Crawl] Found ${sitemapUrls.length} sitemaps for ${baseUrl}`);
+    
+    // Log sitemap discovery results
+    if (sitemapUrls.length > 0) {
+      const sitemapList = sitemapUrls.join(', ');
+      addAuditLog(auditId, 'setup', `✅ Sitemap(s) discovered: ${sitemapUrls.length} found`, { 
+        urls: sitemapUrls, 
+        count: sitemapUrls.length,
+        success: true 
+      });
+      // Log each sitemap URL
+      sitemapUrls.forEach((url, index) => {
+        addAuditLog(auditId, 'setup', `  ${index + 1}. ${url}`, { url, index: index + 1 });
+      });
+    } else {
+      addAuditLog(auditId, 'setup', `⚠️ No sitemaps found - will queue base URL only`, { success: false, urls: [] });
+    }
+    
+    // Update domain record with sitemap URL (use first sitemap if multiple found)
+    if (sitemapUrls.length > 0 && domainId) {
+      try {
+        await prisma.domain.update({
+          where: { id: domainId },
+          data: {
+            sitemapUrl: sitemapUrls[0], // Save first sitemap URL
+          },
+        });
+        console.log(`[Auto-Crawl] ✅ Saved sitemap URL to domain record: ${sitemapUrls[0]}`);
+        if (sitemapUrls.length > 1) {
+          console.log(`[Auto-Crawl] ℹ️  Note: Found ${sitemapUrls.length} sitemaps, saved first one. Others will still be parsed.`);
+        }
+      } catch (error) {
+        console.error(`[Auto-Crawl] Error updating domain with sitemap URL:`, error);
+      }
+    }
+    
+    if (sitemapUrls.length === 0) {
+      console.log(`[Auto-Crawl] ⚠️  No sitemaps found - will queue base URL only`);
+    }
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[Auto-Crawl] Error discovering sitemaps:`, error);
+    addAuditLog(auditId, 'setup', `❌ Sitemap discovery failed: ${errorMessage}`, { success: false, error: errorMessage });
+    // Continue even if sitemap discovery fails - we can still crawl the base URL
+    sitemapUrls = [];
+  }
+
+  // STEP 3: Both robots.txt and sitemap check passed - mark as in_progress
+  await prisma.audit.update({
+    where: { id: auditId },
+    data: {
+      status: 'in_progress',
+      startedAt: new Date(),
+    },
+  });
+  console.log(`[Auto-Crawl] ✅ Audit ${auditId} marked as in_progress (robots.txt and sitemap checks passed)`);
+
+  // Use crawlDelay from robots.txt, default to 0.5 seconds if not set (faster crawling)
+  // Can be overridden with CRAWL_DELAY_SECONDS environment variable
+  const defaultCrawlDelay = parseFloat(process.env.CRAWL_DELAY_SECONDS || '0.5');
+  const crawlDelaySeconds = crawlDelay || defaultCrawlDelay;
+  
+  console.log(`[Auto-Crawl] Using crawl delay: ${crawlDelaySeconds}s (from robots.txt: ${crawlDelay || 'not specified'}, default: ${defaultCrawlDelay}s)`);
+
+  let totalUrlsQueued = 0;
+
+  // Queue base URL first (highest priority) - this starts crawling immediately
+  // CRITICAL: Check robots.txt FIRST - never queue disallowed URLs
+  if (!robotsTxt.isAllowed(baseUrl)) {
+    console.log(`[Auto-Crawl] 🚫 Base URL disallowed by robots.txt, skipping: ${baseUrl}`);
+  } else {
+    const normalizedBaseUrl = normalizeUrl(baseUrl, baseUrl);
+    
+    // Check if URL was crawled in previous audits within 14 days
+    const wasRecentlyCrawled = recentlyCrawledUrls.has(normalizedBaseUrl);
+    
+    if (wasRecentlyCrawled) {
+      console.log(`[Auto-Crawl] ⏭️  Skipping base URL (crawled in previous audit within 14 days): ${baseUrl}`);
+    } else {
+      const shouldCrawl = await shouldCrawlUrlInAudit(baseUrl, auditId, crawlQueue, baseUrl, projectId);
+      if (shouldCrawl) {
+        console.log(`[Auto-Crawl] Queuing seed URL: ${baseUrl}`);
+        const jobId = `${auditId}:${Buffer.from(normalizedBaseUrl).toString('base64').slice(0, 50)}`; // Unique job ID
+        
+        try {
+          await crawlQueue.add(
+            {
+              url: baseUrl,
+              auditId,
+            },
+            {
+              jobId, // Unique job ID prevents duplicates
+              priority: 10, // Highest priority for seed URL
+            }
+          );
+          totalUrlsQueued++;
+          
+          // Add queued log for base URL
+          addAuditLog(auditId, 'queued', `Queued: ${baseUrl}`, { url: baseUrl, jobId, source: 'base-url' });
+          
+          // CRITICAL: Set pagesTotal = count of queued logs (no math, no increment, just count and set)
+          try {
+            const queuedLogCount = await prisma.auditLog.count({
+              where: {
+                auditId,
+                category: 'queued',
+              },
+            });
+            await prisma.audit.update({
+              where: { id: auditId },
+              data: {
+                pagesTotal: queuedLogCount,
+              },
+            });
+          } catch (error) {
+            console.error(`[Auto-Crawl] Failed to update pagesTotal for base URL:`, error);
+          }
+        } catch (error: unknown) {
+          // If job already exists (duplicate jobId), skip it
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const errorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+          if (errorMessage.includes('already exists') || errorCode === 'DUPLICATE_JOB') {
+            console.log(`[Auto-Crawl] ⏭️  Skipping duplicate job for base URL: ${baseUrl}`);
+            // Add queued log even for duplicates to keep pagesTotal = queued log count
+            addAuditLog(auditId, 'queued', `Queued: ${baseUrl}`, { url: baseUrl, jobId, source: 'base-url', duplicate: true });
+            
+            // CRITICAL: Set pagesTotal = count of queued logs (no math, no increment, just count and set)
+            try {
+              const queuedLogCount = await prisma.auditLog.count({
+                where: {
+                  auditId,
+                  category: 'queued',
+                },
+              });
+              await prisma.audit.update({
+                where: { id: auditId },
+                data: {
+                  pagesTotal: queuedLogCount,
+                },
+              });
+            } catch (updateError) {
+              console.error(`[Auto-Crawl] Failed to update pagesTotal for duplicate base URL:`, updateError);
+            }
+          } else {
+            throw error; // Re-throw other errors
+          }
+        }
+      } else {
+        console.log(`[Auto-Crawl] ⏭️  Skipping base URL (already crawled or queued): ${baseUrl}`);
+      }
+    }
+  }
+
+  // NEW APPROACH: Collect all sitemap URLs first, then filter and queue
+  // Step 1: Parse all sitemaps and collect URLs
+  // Step 2: Filter URLs (robots.txt disallowed + 14-day crawled)
+  // Step 3: Queue all filtered URLs
+  // Step 4: Then follow links from crawled pages (with same filters)
+  (async () => {
+    try {
+      console.log(`[Auto-Crawl] Starting sitemap collection and filtering...`);
+      
+      // CRITICAL: Check audit status at start - stop if already stopped/paused
+      const initialAuditCheck = await prisma.audit.findUnique({
+        where: { id: auditId },
+        select: { status: true },
+      });
+      
+      if (!initialAuditCheck || initialAuditCheck.status === 'stopped' || initialAuditCheck.status === 'paused') {
+        console.log(`[Auto-Crawl] ⏸️  Audit ${auditId} is ${initialAuditCheck?.status || 'not found'}, skipping sitemap queuing`);
+        return;
+      }
+      
+      if (sitemapUrls.length === 0) {
+        console.log(`[Auto-Crawl] ⚠️  No sitemaps to parse, only base URL will be crawled`);
+        // Update pagesTotal to reflect only base URL
+        await prisma.audit.update({
+          where: { id: auditId },
+          data: {
+            pagesTotal: totalUrlsQueued > 0 ? totalUrlsQueued : 1,
+          },
+        });
+        return;
+      }
+      
+      // STEP 1: Collect all URLs from all sitemaps
+      const allSitemapUrls: Array<{ url: string; priority?: number }> = [];
+      for (const sitemapUrl of sitemapUrls) {
+        try {
+          console.log(`[Auto-Crawl] Parsing sitemap: ${sitemapUrl}`);
+          const sitemapUrlList = await parseSitemap(sitemapUrl);
+          console.log(`[Auto-Crawl] Found ${sitemapUrlList.length} URLs in sitemap ${sitemapUrl}`);
+          allSitemapUrls.push(...sitemapUrlList);
+        } catch (error) {
+          console.error(`[Auto-Crawl] ❌ Error parsing sitemap ${sitemapUrl}:`, error);
+          // Continue with other sitemaps
+        }
+      }
+      
+      console.log(`[Auto-Crawl] Collected ${allSitemapUrls.length} total URLs from all sitemaps`);
+      
+      // CRITICAL: Check audit status before filtering - stop if paused/stopped
+      const preFilterAuditCheck = await prisma.audit.findUnique({
+        where: { id: auditId },
+        select: { status: true },
+      });
+      
+      if (!preFilterAuditCheck || preFilterAuditCheck.status === 'stopped' || preFilterAuditCheck.status === 'paused') {
+        console.log(`[Auto-Crawl] ⏸️  Audit ${auditId} is ${preFilterAuditCheck?.status || 'not found'}, stopping before filtering`);
+        return;
+      }
+      
+      console.log(`[Auto-Crawl] Starting filtering and queuing process (will queue immediately after each batch)...`);
+      
+      // STEP 2 & 3: Filter URLs and queue them immediately after each batch
+      // This allows crawling to start sooner instead of waiting for all filtering to complete
+      let skippedRobotsTxt = 0;
+      let skipped14Days = 0;
+      let skippedAlreadyQueued = 0;
+      let queuedCount = totalUrlsQueued; // Start with base URL count
+      let failedCount = 0;
+      
+      // Process in batches to show progress and avoid blocking
+      const filterBatchSize = 100;
+      const queueBatchSize = 50; // Queue in smaller batches for better control
+      const concurrentFilterBatches = 3; // Process 3 filtering batches concurrently
+      
+      // Create all batch ranges first
+      const batchRanges: Array<{ start: number; end: number; batchNum: number }> = [];
+      for (let i = 0; i < allSitemapUrls.length; i += filterBatchSize) {
+        batchRanges.push({
+          start: i,
+          end: Math.min(i + filterBatchSize, allSitemapUrls.length),
+          batchNum: Math.floor(i / filterBatchSize) + 1,
+        });
+      }
+      const totalBatches = batchRanges.length;
+      
+      // Process batches concurrently with a limit
+      for (let i = 0; i < batchRanges.length; i += concurrentFilterBatches) {
+        const concurrentBatches = batchRanges.slice(i, i + concurrentFilterBatches);
+        
+        // Process these batches concurrently
+        await Promise.all(concurrentBatches.map(async ({ start, end, batchNum }) => {
+          // CRITICAL: Check audit status before each batch - stop if paused/stopped
+          const currentAudit = await prisma.audit.findUnique({
+            where: { id: auditId },
+            select: { status: true },
+          });
+          
+          if (!currentAudit || currentAudit.status === 'stopped' || currentAudit.status === 'paused') {
+            console.log(`[Auto-Crawl] ⏸️  Audit ${auditId} is ${currentAudit?.status || 'not found'}, stopping batch ${batchNum}`);
+            return; // Skip this batch
+          }
+          
+          const batch = allSitemapUrls.slice(start, end);
+          console.log(`[Auto-Crawl] Filtering batch ${batchNum}/${totalBatches}: ${start + 1}-${end}/${allSitemapUrls.length} URLs`);
+          addAuditLog(auditId, 'filtering', `Filtering batch ${batchNum}/${totalBatches}: ${start + 1}-${end}/${allSitemapUrls.length} URLs`);
+        
+        // Filter this batch and collect URLs to queue
+        const batchUrlsToQueue: Array<{ url: string; normalizedUrl: string; priority: number }> = [];
+        let batchSkippedRobots = 0;
+        let batchSkipped14Days = 0;
+        let batchSkippedAlreadyQueued = 0;
+        
+        for (const sitemapUrlData of batch) {
+          // CRITICAL: Check audit status before processing each URL in batch
+          const urlAuditCheck = await prisma.audit.findUnique({
+            where: { id: auditId },
+            select: { status: true },
+          });
+          
+          if (!urlAuditCheck || urlAuditCheck.status === 'stopped' || urlAuditCheck.status === 'paused') {
+            console.log(`[Auto-Crawl] ⏸️  Audit ${auditId} is ${urlAuditCheck?.status || 'not found'}, stopping filtering batch`);
+            break; // Stop processing this batch
+          }
+          
+          const originalUrl = sitemapUrlData.url;
+          
+          // FIRST: Check robots.txt (before normalization)
+          const isAllowed = robotsTxt.isAllowed(originalUrl);
+          if (!isAllowed) {
+            skippedRobotsTxt++;
+            batchSkippedRobots++;
+            // Log first 20 skipped URLs for debugging
+            if (skippedRobotsTxt <= 20) {
+              console.log(`[Auto-Crawl] 🚫 Skipped by robots.txt: ${originalUrl}`);
+            }
+            addAuditLog(auditId, 'skipped', `Skipped by robots.txt: ${originalUrl}`, { reason: 'robots.txt', url: originalUrl });
+            continue; // Skip - disallowed by robots.txt
+          }
+          
+          // Normalize for deduplication
+          const url = normalizeUrl(originalUrl, baseUrl);
+          const normalizedUrl = normalizeUrl(url, baseUrl);
+          
+          // SECOND: Check if URL was crawled in previous audits within 14 days
+          if (recentlyCrawledUrls.has(normalizedUrl)) {
+            skipped14Days++;
+            batchSkipped14Days++;
+            addAuditLog(auditId, 'skipped', `Skipped (crawled within 14 days): ${url}`, { reason: '14-day', url });
+            continue; // Skip - was crawled in previous audit within 14 days
+          }
+          
+          // THIRD: Skip recently crawled URLs if within 14 days (from resume parameter)
+          if (skipRecentUrls.includes(url)) {
+            skipped14Days++;
+            batchSkipped14Days++;
+            addAuditLog(auditId, 'skipped', `Skipped (recent crawl): ${url}`, { reason: 'recent', url });
+            continue;
+          }
+          
+          // FOURTH: Check database for deduplication (already crawled or queued in this audit)
+          // This is the slowest check - it queries the database
+          const shouldCrawl = await shouldCrawlUrlInAudit(url, auditId, crawlQueue, baseUrl, projectId);
+          if (!shouldCrawl) {
+            skippedAlreadyQueued++;
+            batchSkippedAlreadyQueued++;
+            addAuditLog(auditId, 'skipped', `Skipped (already queued/crawled): ${url}`, { reason: 'duplicate', url });
+            continue; // Already crawled or queued
+          }
+          
+          // URL passed all filters - add to batch queue list
+          batchUrlsToQueue.push({
+            url,
+            normalizedUrl,
+            priority: sitemapUrlData.priority || 0.5,
+          });
+        }
+        
+        // Log filtering results for this batch
+        console.log(`[Auto-Crawl] Batch ${batchNum}/${totalBatches} filtered: ${batchUrlsToQueue.length} passed filters, ${batchSkippedRobots} robots.txt, ${batchSkipped14Days} 14-day, ${batchSkippedAlreadyQueued} already queued`);
+        addAuditLog(auditId, 'filtering', `Batch ${batchNum}/${totalBatches} filtered: ${batchUrlsToQueue.length} passed, ${batchSkippedRobots} robots.txt, ${batchSkipped14Days} 14-day, ${batchSkippedAlreadyQueued} duplicate`);
+        
+        // Also log individual filtering events for better visibility
+        if (batchUrlsToQueue.length > 0) {
+          addAuditLog(auditId, 'filtering', `✅ ${batchUrlsToQueue.length} URLs passed all filters in batch ${batchNum}`);
+        }
+        
+        // Immediately queue this batch's URLs to Redis
+        if (batchUrlsToQueue.length > 0) {
+          console.log(`[Auto-Crawl] Queuing ${batchUrlsToQueue.length} URLs from batch ${batchNum} to Redis...`);
+          
+          // Track how many URLs were successfully queued in THIS batch
+          let batchQueuedCount = 0;
+          
+          // Queue in smaller batches for better control
+          for (let j = 0; j < batchUrlsToQueue.length; j += queueBatchSize) {
+            // Check audit status before queuing
+            const queueAuditCheck = await prisma.audit.findUnique({
+              where: { id: auditId },
+              select: { status: true },
+            });
+            
+            if (!queueAuditCheck || queueAuditCheck.status === 'stopped' || queueAuditCheck.status === 'paused') {
+              console.log(`[Auto-Crawl] ⏸️  Audit ${auditId} is ${queueAuditCheck?.status || 'not found'}, stopping queuing`);
+              break;
+            }
+            
+            const queueBatch = batchUrlsToQueue.slice(j, j + queueBatchSize);
+            const queueBatchNum = Math.floor(j / queueBatchSize) + 1;
+            const totalQueueBatches = Math.ceil(batchUrlsToQueue.length / queueBatchSize);
+            
+            const queueResults = await Promise.allSettled(
+              queueBatch.map(async (urlData) => {
+                const jobId = `${auditId}:${Buffer.from(urlData.normalizedUrl).toString('base64').slice(0, 50)}`;
+                
+                try {
+                  // Don't add delay when queuing - delay is handled by the processor
+                  // Adding delay here would make later jobs wait too long (e.g., job 1400 waits 700 seconds!)
+                  const job = await crawlQueue.add(
+                    {
+                      url: urlData.url,
+                      auditId,
+                      fromSitemap: true,
+                    },
+                    {
+                      jobId,
+                      priority: Math.floor((urlData.priority || 0.5) * 10),
+                      // No delay - processor handles rate limiting
+                    }
+                  );
+                  
+                  // Verify job was actually added
+                  if (!job || !job.id) {
+                    console.error(`[Auto-Crawl] ❌ Queue returned null job for ${urlData.url}`);
+                    failedCount++;
+                    return { success: false, url: urlData.url, error: 'Job was null' };
+                  }
+                  
+                  queuedCount++;
+                  batchQueuedCount++;
+                  // Only log first 10 successful queues to reduce noise
+                  if (queuedCount - totalUrlsQueued <= 10) {
+                    console.log(`[Auto-Crawl] ✅ Queued: ${urlData.url} (jobId: ${job.id})`);
+                  }
+                  addAuditLog(auditId, 'queued', `Queued: ${urlData.url}`, { url: urlData.url, jobId: job.id });
+                  
+                  // CRITICAL: Set pagesTotal = count of queued logs (no math, no increment, just count and set)
+                  try {
+                    const queuedLogCount = await prisma.auditLog.count({
+                      where: {
+                        auditId,
+                        category: 'queued',
+                      },
+                    });
+                    await prisma.audit.update({
+                      where: { id: auditId },
+                      data: {
+                        pagesTotal: queuedLogCount,
+                      },
+                    });
+                  } catch (error) {
+                    // Non-critical - log but don't fail
+                    console.error(`[Auto-Crawl] Failed to update pagesTotal for ${urlData.url}:`, error);
+                  }
+                  
+                  return { success: true, url: urlData.url, jobId: job.id };
+                } catch (error: unknown) {
+                  // If job already exists (duplicate jobId), that's okay - it's already queued
+                  const queueErrorMsg = error instanceof Error ? error.message : String(error);
+                  const queueErrorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+                  if (queueErrorMsg.includes('already exists') || queueErrorCode === 'DUPLICATE_JOB') {
+                    queuedCount++; // Count as queued since it already exists
+                    batchQueuedCount++;
+                    addAuditLog(auditId, 'queued', `Queued: ${urlData.url}`, { url: urlData.url, jobId: 'duplicate' });
+                    
+                    // CRITICAL: Set pagesTotal = count of queued logs (no math, no increment, just count and set)
+                    try {
+                      const queuedLogCount = await prisma.auditLog.count({
+                        where: {
+                          auditId,
+                          category: 'queued',
+                        },
+                      });
+                      await prisma.audit.update({
+                        where: { id: auditId },
+                        data: {
+                          pagesTotal: queuedLogCount,
+                        },
+                      });
+                    } catch (error: unknown) {
+                      // Non-critical - log but don't fail
+                      const errorMessage = error instanceof Error ? error.message : String(error);
+                      console.error(`[Auto-Crawl] Failed to update pagesTotal for duplicate ${urlData.url}:`, errorMessage);
+                    }
+                    
+                    return { success: true, url: urlData.url, jobId: 'duplicate' };
+                  }
+                  // Log other errors but don't fail the entire batch
+                  const queueErrorMsg2 = error instanceof Error ? error.message : String(error);
+                  console.error(`[Auto-Crawl] ❌ Failed to queue ${urlData.url}:`, queueErrorMsg2);
+                  failedCount++;
+                  return { success: false, url: urlData.url, error: queueErrorMsg2 };
+                }
+              })
+            );
+            
+            // Count successful vs failed
+            const queueBatchSuccess = queueResults.filter(r => r.status === 'fulfilled' && r.value.success).length;
+            const queueBatchFailed = queueResults.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && !r.value.success)).length;
+            
+            if (totalQueueBatches > 1) {
+              console.log(`[Auto-Crawl] ✅ Queue batch ${queueBatchNum}/${totalQueueBatches} of filter batch ${batchNum}: ${queueBatchSuccess} queued, ${queueBatchFailed} failed`);
+            }
+          }
+          
+          console.log(`[Auto-Crawl] ✅ Batch ${batchNum}/${totalBatches} COMPLETE: ${batchQueuedCount} URLs queued to Redis (total queued so far: ${queuedCount - totalUrlsQueued})`);
+          // Note: pagesTotal is updated per-URL when each queued log is added, so no batch-level update needed
+          
+          // Continue to next filtering batch immediately - no need to wait for crawling
+          // Filtering/queuing and crawling happen concurrently:
+          // - Filtering keeps adding URLs to queue
+          // - Crawling processes whatever is in the queue independently
+          // This allows maximum throughput
+        } else {
+          console.log(`[Auto-Crawl] ✅ Batch ${batchNum}/${totalBatches} COMPLETE: No URLs to queue from this batch`);
+        }
+        })); // End of Promise.all map
+      } // End of concurrent batches loop
+      
+      console.log(`[Auto-Crawl] ✅ Filtering and queuing complete: ${queuedCount - totalUrlsQueued} URLs queued to Redis, ${failedCount} failed, ${skippedRobotsTxt} disallowed by robots.txt, ${skipped14Days} crawled within 14 days, ${skippedAlreadyQueued} already queued/crawled`);
+      // Note: pagesTotal is updated per-URL when each queued log is added, so no final calculation needed
+    } catch (error) {
+      console.error(`[Auto-Crawl] ❌ CRITICAL: Error in sitemap URL queuing:`, error);
+      // Update audit status to failed if queuing fails
+      try {
+        await prisma.audit.update({
+          where: { id: auditId },
+          data: {
+            status: 'failed',
+          },
+        });
+        console.log(`[Auto-Crawl] Audit ${auditId} marked as failed due to URL queuing error`);
+      } catch (updateError) {
+        console.error(`[Auto-Crawl] Failed to update audit status:`, updateError);
+      }
+    }
+  })();
+
+  // Return immediately - sitemap parsing happens in background
+  // pagesTotal starts at 0 and increments by 1 for each queued log entry
+  // No initial value needed - it will be updated as URLs are queued
+
+  console.log(`[Auto-Crawl] Audit ${auditId} started, queuing URLs in background...`);
+
+  return {
+    sitemapsFound: sitemapUrls.length,
+    urlsQueued: totalUrlsQueued, // Will be updated as URLs are queued
+    baseUrl,
+  };
+}
+
