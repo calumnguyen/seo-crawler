@@ -6,16 +6,17 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    // Get active audits (in_progress, pending, and paused - paused can be resumed)
+    // Get active audits (in_progress, pending, paused, and pending_approval - paused can be resumed, pending_approval needs approval)
     const activeAudits = await prisma.audit.findMany({
       where: {
         status: {
-          in: ['in_progress', 'pending', 'paused'],
+          in: ['in_progress', 'pending', 'paused', 'pending_approval'],
         },
       },
       include: {
         project: {
           select: {
+            id: true,
             name: true,
             domain: true,
           },

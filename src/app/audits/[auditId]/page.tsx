@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface Audit {
   id: string;
@@ -402,7 +403,7 @@ export default function AuditDetailPage() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-xl">Loading audit...</div>
+        <TetrisLoading size="md" speed="normal" loadingText="Loading..." />
       </div>
     );
   }
@@ -652,26 +653,53 @@ export default function AuditDetailPage() {
               <div className="mb-3 text-sm text-yellow-700 dark:text-yellow-300">
                 robots.txt was not found for this domain. Please review and approve the crawl before proceeding.
               </div>
-              <button
-                onClick={async () => {
-                  if (!confirm('Approve crawl without robots.txt? This will start crawling immediately.')) return;
-                  try {
-                    const res = await fetch(`/api/audits/${auditId}/approve`, { method: 'POST' });
-                    if (res.ok) {
-                      fetchAuditData();
-                    } else {
-                      const error = await res.json();
-                      alert(error.error || 'Failed to approve crawl');
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!confirm('Approve crawl without robots.txt? This will start crawling immediately.')) return;
+                    try {
+                      const res = await fetch(`/api/audits/${auditId}/approve`, { method: 'POST' });
+                      if (res.ok) {
+                        fetchAuditData();
+                      } else {
+                        const error = await res.json();
+                        alert(error.error || 'Failed to approve crawl');
+                      }
+                    } catch (error) {
+                      console.error('Error approving crawl:', error);
+                      alert('Failed to approve crawl');
                     }
-                  } catch (error) {
-                    console.error('Error approving crawl:', error);
-                    alert('Failed to approve crawl');
-                  }
-                }}
-                className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700"
-              >
-                ✅ Approve & Start Crawl
-              </button>
+                  }}
+                  className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold text-white hover:bg-green-700"
+                >
+                  ✅ Approve & Start Crawl
+                </button>
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Delete project "${audit.project?.name || 'this project'}"? This will permanently delete the project and all its audits. This action cannot be undone.`)) return;
+                    try {
+                      const projectId = audit.project?.id;
+                      if (!projectId) {
+                        alert('Project ID not found');
+                        return;
+                      }
+                      const res = await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+                      if (res.ok) {
+                        window.location.href = '/projects';
+                      } else {
+                        const error = await res.json();
+                        alert(error.error || 'Failed to delete project');
+                      }
+                    } catch (error) {
+                      console.error('Error deleting project:', error);
+                      alert('Failed to delete project');
+                    }
+                  }}
+                  className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700"
+                >
+                  🗑️ Delete Project
+                </button>
+              </div>
             </div>
           )}
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface Project {
@@ -47,6 +47,7 @@ interface CrawlResult {
 
 export default function ProjectDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const projectId = params.id as string;
   
   const [project, setProject] = useState<Project | null>(null);
@@ -356,6 +357,28 @@ export default function ProjectDetailPage() {
                                 className="rounded bg-green-600 px-3 py-1 text-xs font-semibold text-white hover:bg-green-700"
                               >
                                 ✅ Approve & Start Crawl
+                              </button>
+                              <button
+                                onClick={async (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  if (!confirm(`Delete project "${project.name}"? This will permanently delete the project and all its audits. This action cannot be undone.`)) return;
+                                  try {
+                                    const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' });
+                                    if (res.ok) {
+                                      router.push('/projects');
+                                    } else {
+                                      const error = await res.json();
+                                      alert(error.error || 'Failed to delete project');
+                                    }
+                                  } catch (error) {
+                                    console.error('Error deleting project:', error);
+                                    alert('Failed to delete project');
+                                  }
+                                }}
+                                className="rounded bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700"
+                              >
+                                🗑️ Delete Project
                               </button>
                               <Link
                                 href={`/audits/${audit.id}`}

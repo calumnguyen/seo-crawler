@@ -382,6 +382,28 @@ export default function AllProjectsPage() {
                                 >
                                   Approve & Start Crawl
                                 </button>
+                                <button
+                                  onClick={async (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    if (!confirm(`Delete project "${project.name}"? This will permanently delete the project and all its audits. This action cannot be undone.`)) return;
+                                    try {
+                                      const res = await fetch(`/api/projects/${project.id}`, { method: 'DELETE' });
+                                      if (res.ok) {
+                                        fetchProjects();
+                                      } else {
+                                        const error = await res.json();
+                                        alert(error.error || 'Failed to delete project');
+                                      }
+                                    } catch (error) {
+                                      console.error('Error deleting project:', error);
+                                      alert('Failed to delete project');
+                                    }
+                                  }}
+                                  className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700 relative z-20 cursor-pointer"
+                                >
+                                  🗑️ Delete Project
+                                </button>
                                 <Link
                                   href={`/audits/${audit.id}`}
                                   className="flex-1 rounded bg-blue-600 px-2 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700 relative z-20 cursor-pointer"

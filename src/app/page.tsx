@@ -24,6 +24,7 @@ interface Audit {
   pagesCrawled: number;
   pagesTotal: number;
   project?: {
+    id: string;
     name: string;
     domain: string;
   };
@@ -618,6 +619,34 @@ export default function Dashboard() {
                                 className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700"
                               >
                                 ✅ Approve & Start Crawl
+                              </button>
+                              <button
+                                onClick={async (e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  const projectName = audit.project?.name || 'this project';
+                                  if (!confirm(`Delete project "${projectName}"? This will permanently delete the project and all its audits. This action cannot be undone.`)) return;
+                                  try {
+                                  const projectId = audit.project?.id;
+                                  if (!projectId) {
+                                    alert('Project ID not found');
+                                    return;
+                                  }
+                                    const res = await fetch(`/api/projects/${projectId}`, { method: 'DELETE' });
+                                    if (res.ok) {
+                                      fetchData();
+                                    } else {
+                                      const error = await res.json();
+                                      alert(error.error || 'Failed to delete project');
+                                    }
+                                  } catch (error) {
+                                    console.error('Error deleting project:', error);
+                                    alert('Failed to delete project');
+                                  }
+                                }}
+                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700"
+                              >
+                                🗑️ Delete Project
                               </button>
                               <Link
                                 href={`/audits/${audit.id}`}
