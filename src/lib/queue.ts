@@ -68,25 +68,27 @@ function createQueueInstance(): QueueType<CrawlJob> {
   const queue = new Queue<CrawlJob>('crawl', {
     redis: redisConfig,
     defaultJobOptions: {
-      attempts: 3,
+      attempts: 5, // Increased attempts for resilience (was 3)
       backoff: {
         type: 'exponential',
         delay: 2000,
       },
-      // Optimize Redis memory: Remove jobs immediately after completion/failure
-      // This saves Redis memory but loses job history for debugging
+      // Optimize Redis memory: Remove jobs immediately after completion
+      // Keep failed jobs temporarily for debugging (can be cleared manually)
       removeOnComplete: true, // Remove completed jobs immediately
-      removeOnFail: true, // Remove failed jobs immediately
+      removeOnFail: false, // Keep failed jobs for debugging and retry analysis
+      // Timeout for job processing (5 minutes max per job)
+      timeout: 300000, // 5 minutes
       // Reduce job data size - don't store full job data in Redis
       jobId: undefined, // Let Bull generate compact IDs
     },
     // Optimize connection usage
     settings: {
-      stalledInterval: 30000, // Check for stalled jobs every 30s
-      maxStalledCount: 1, // Only retry stalled jobs once
-      // Reduce connection overhead
-      lockDuration: 30000, // Lock duration for jobs
-      lockRenewTime: 15000, // Renew lock every 15s
+      stalledInterval: 60000, // Check for stalled jobs every 60s (increased to reduce false positives)
+      maxStalledCount: 3, // Retry stalled jobs up to 3 times (increased for resilience)
+      // Increase lock duration for longer-running crawl operations
+      lockDuration: 120000, // Lock duration for jobs: 2 minutes (crawling can take time)
+      lockRenewTime: 30000, // Renew lock every 30s (half of lockDuration to ensure renewal)
     },
     // Don't use createClient - let Bull manage its own connections
     // Bull will create 2 connections (client + subscriber) which is the minimum
@@ -154,6 +156,17 @@ if (!global.__queueEventListenersRegistered) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error('[Queue] Redis error:', errorMessage);
     
+    // Check if it's a connection limit error
+    if (errorMessage.includes('max number of clients') || 
+        errorMessage.includes('ECONNREFUSED') ||
+        errorMessage.includes('ECONNRESET')) {
+      console.error('[Queue] ⚠️  Redis connection limit reached or connection error!');
+      console.error('[Queue] ⚠️  Jobs will automatically retry when connections are available.');
+      console.error('[Queue] ⚠️  Consider increasing Redis maxclients or reducing queue concurrency.');
+      // Don't pause audits for connection errors - let jobs retry automatically
+      return;
+    }
+    
     // Check if it's a storage/memory error (Redis OOM)
     if (errorMessage.includes('OOM') || 
         errorMessage.includes('maxmemory') || 
@@ -179,7 +192,22 @@ if (!global.__queueEventListenersRegistered) {
   });
 
   crawlQueue.on('failed', (job, err) => {
-    console.error(`[Queue] Job ${job?.id} failed:`, err.message);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error(`[Queue] Job ${job?.id} failed:`, errorMessage);
+    
+    // Check if it's a connection error - these should be retried
+    if (errorMessage.includes('ECONNREFUSED') || 
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('max number of clients') ||
+        errorMessage.includes('Lock mismatch') ||
+        errorMessage.includes('stalled')) {
+      console.log(`[Queue] ⚠️  Job ${job?.id} failed due to Redis connection/lock issue - will retry automatically`);
+    }
+  });
+
+  // Handle stalled jobs - these are jobs that took longer than lockDuration
+  crawlQueue.on('stalled', (jobId) => {
+    console.log(`[Queue] ⚠️  Job ${jobId} stalled (took longer than lock duration) - will be retried`);
   });
 }
 
@@ -706,9 +734,24 @@ if (!global.__queueProcessorRegistered) {
     }
     
     return crawlResult;
-  } catch (error) {
-    console.error(`[Queue] Error processing job ${job.id}:`, error);
-    throw error; // Re-throw so Bull can handle retries
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error(`[Queue] Error processing job ${job.id}:`, errorMessage);
+    
+    // Check if it's a Redis connection error - these should be retried
+    if (errorMessage.includes('ECONNREFUSED') || 
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('max number of clients') ||
+        errorMessage.includes('Lock mismatch') ||
+        errorMessage.includes('stalled') ||
+        errorMessage.includes('Connection closed')) {
+      console.log(`[Queue] ⚠️  Job ${job.id} failed due to Redis connection/lock issue - will retry automatically`);
+      // Re-throw so Bull can retry the job
+      throw error;
+    }
+    
+    // For other errors, also re-throw for retry mechanism
+    throw error;
   }
     });
     
