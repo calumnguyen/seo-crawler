@@ -427,9 +427,30 @@ if (!global.__queueProcessorRegistered) {
     // Apply crawl delay BEFORE crawling (respect robots.txt rate limiting)
     // This ensures we don't overwhelm the server
     // Note: crawlDelay is defined above when loading robots.txt
+    // For long delays, check status periodically to allow faster cancellation
     const delayMs = crawlDelay * 1000;
     if (delayMs > 0) {
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      // For delays longer than 1 second, check status every 500ms to allow faster cancellation
+      if (delayMs > 1000) {
+        const checkInterval = 500; // Check every 500ms
+        const totalChecks = Math.ceil(delayMs / checkInterval);
+        for (let i = 0; i < totalChecks; i++) {
+          await new Promise(resolve => setTimeout(resolve, Math.min(checkInterval, delayMs - (i * checkInterval))));
+          
+          // Check status during delay to allow immediate cancellation
+          const delayAuditCheck = await prismaCheck.audit.findUnique({
+            where: { id: auditId },
+            select: { status: true },
+          });
+          if (!delayAuditCheck || delayAuditCheck.status === 'stopped' || delayAuditCheck.status === 'paused') {
+            console.log(`[Queue] ⏸️  Audit ${auditId} is ${delayAuditCheck?.status || 'not found'}, aborting job ${job.id} during delay`);
+            return null;
+          }
+        }
+      } else {
+        // For short delays, just wait
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
     
     // CRITICAL: Re-check audit status after delay (stop might have been clicked during delay)

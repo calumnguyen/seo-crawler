@@ -96,12 +96,6 @@ export default function UsersPage() {
         {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <Link
-              href="/"
-              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
-            >
-              ← Back to Dashboard
-            </Link>
           <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
             Users
           </h1>

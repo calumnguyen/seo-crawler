@@ -127,21 +127,15 @@ export default function CrawlDetailPage() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <Link
-              href="/crawls"
-              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
-            >
-              ← Back to All Crawls
-            </Link>
             <h1 className="text-3xl font-bold text-black dark:text-zinc-50">
               Crawl Details
             </h1>
           </div>
           <Link
-            href="/"
+            href="/crawls"
             className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
           >
-            ← Back to Dashboard
+            ← Back to All Crawls
           </Link>
         </div>
 

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
+import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface Project {
   id: string;
@@ -110,7 +111,7 @@ export default function ProjectDetailPage() {
   if (loading && !project && audits.length === 0 && crawlResults.length === 0) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-xl">Loading project...</div>
+        <TetrisLoading size="md" speed="normal" loadingText="Loading..." />
       </div>
     );
   }
@@ -129,12 +130,6 @@ export default function ProjectDetailPage() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <Link
-              href="/projects"
-              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
-            >
-              ← Back to All Projects
-            </Link>
             <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
               {project.name}
             </h1>
@@ -146,10 +141,10 @@ export default function ProjectDetailPage() {
             </p>
           </div>
           <Link
-            href="/"
+            href="/projects"
             className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
           >
-            ← Back to Dashboard
+            ← Back to All Projects
           </Link>
         </div>
 

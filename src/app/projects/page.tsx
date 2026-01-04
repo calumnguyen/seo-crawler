@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import AnimatedFolder from '@/components/ui/3d-folder';
+import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface Project {
   id: string;
@@ -30,12 +32,23 @@ export default function AllProjectsPage() {
   const [startingCrawl, setStartingCrawl] = useState<string | null>(null);
   const [optimisticAudits, setOptimisticAudits] = useState<Set<string>>(new Set()); // Track audits we've optimistically marked as in_progress
   const [actionLoading, setActionLoading] = useState<{ auditId: string; action: 'pause' | 'resume' | 'stop' } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
 
   useEffect(() => {
     fetchProjects();
     const interval = setInterval(fetchProjects, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const fetchProjects = async () => {
     try {
@@ -201,10 +214,31 @@ export default function AllProjectsPage() {
     return mostRecentAudit?.startedAt || null;
   };
 
+  const getTotalPagesCrawled = (project: Project): number => {
+    if (!project.audits || project.audits.length === 0) return 0;
+    // Get the maximum pages crawled from all audits (most recent/comprehensive crawl)
+    return Math.max(...project.audits.map(a => a.pagesCrawled || 0), 0);
+  };
+
+  // Filter projects based on search query
+  const filteredProjects = useMemo(() => {
+    if (!debouncedSearchQuery.trim()) {
+      return projects;
+    }
+
+    const query = debouncedSearchQuery.toLowerCase().trim();
+    return projects.filter((project) => {
+      const nameMatch = project.name.toLowerCase().includes(query);
+      const domainMatch = project.domain.toLowerCase().includes(query);
+      const baseUrlMatch = project.baseUrl.toLowerCase().includes(query);
+      return nameMatch || domainMatch || baseUrlMatch;
+    });
+  }, [projects, debouncedSearchQuery]);
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-xl">Loading projects...</div>
+        <TetrisLoading size="md" speed="normal" loadingText="Loading..." />
       </div>
     );
   }
@@ -229,16 +263,49 @@ export default function AllProjectsPage() {
           </Link>
         </div>
 
+        {/* Search Bar */}
+        <div className="mb-6">
+          <div className="relative max-w-md">
+            <input
+              type="text"
+              placeholder="Search by project name or domain..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-2.5 pl-10 text-sm text-black placeholder:text-zinc-500 transition-colors focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:placeholder:text-zinc-400 dark:focus:border-blue-400"
+            />
+            <svg
+              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-400 dark:text-zinc-500"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+          </div>
+        </div>
+
         {projects.length === 0 ? (
           <div className="rounded-lg bg-white p-8 text-center shadow-sm dark:bg-zinc-900">
             <p className="text-zinc-500 dark:text-zinc-400">
               No projects yet. Create your first project from the dashboard!
             </p>
           </div>
+        ) : filteredProjects.length === 0 ? (
+          <div className="rounded-lg bg-white p-8 text-center shadow-sm dark:bg-zinc-900">
+            <p className="text-zinc-500 dark:text-zinc-400">
+              No projects found matching "{debouncedSearchQuery}"
+            </p>
+          </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {projects.map((project) => {
+          <div className="grid gap-8 md:grid-cols-2 lg:grid-cols-3 justify-items-center">
+            {filteredProjects.map((project) => {
               const lastCrawled = getLastCrawledDate(project);
+              const totalPagesCrawled = getTotalPagesCrawled(project);
               const hasPendingAudit = project.audits?.some((a) => a.status === 'pending');
               // Include optimistic audits (those we've optimistically marked as in_progress)
               const activeAudits = project.audits?.filter((a) => 
@@ -246,106 +313,89 @@ export default function AllProjectsPage() {
               ) || [];
               const pendingApprovalAudits = project.audits?.filter((a) => a.status === 'pending_approval') || [];
               
+              // Generate gradient based on project index for visual variety
+              const gradients = [
+                "linear-gradient(135deg, #e73827, #f85032)",
+                "linear-gradient(to right, #f7b733, #fc4a1a)",
+                "linear-gradient(135deg, #00c6ff, #0072ff)",
+                "linear-gradient(to right, #414345, #232526)",
+                "linear-gradient(135deg, #8e2de2, #4a00e0)",
+                "linear-gradient(135deg, #f80759, #bc4e9c)",
+              ];
+              const gradient = gradients[parseInt(project.id.slice(-1) || '0', 16) % gradients.length];
+              
               return (
                   <div
                     key={project.id}
-                    className="rounded-lg border border-zinc-200 bg-white p-6 shadow-sm transition-all hover:border-zinc-300 hover:shadow-md dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600"
+                    className="w-full max-w-sm"
                   >
-                    <Link
+                    <AnimatedFolder
+                      id={project.id}
+                      name={project.name}
+                      domain={project.domain}
+                      baseUrl={project.baseUrl}
+                      pagesCrawled={totalPagesCrawled}
+                      lastCrawled={lastCrawled}
+                      gradient={gradient}
                       href={`/projects/${project.id}`}
-                      className="block cursor-pointer"
+                      className="w-full"
                     >
-                      <div className="mb-4">
-                        <h3 className="text-xl font-semibold text-black dark:text-zinc-50">
-                          {project.name}
-                        </h3>
-                        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-                          {project.baseUrl}
-                        </p>
-                      </div>
-
-                      <div className="mb-4 space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-zinc-600 dark:text-zinc-400">Audits:</span>
-                          <span className="font-medium text-black dark:text-zinc-50">
-                            {project._count?.audits || 0}
-                          </span>
-                        </div>
-                        {lastCrawled && (
-                          <div className="flex justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Last Crawled:</span>
-                            <span className="font-medium text-black dark:text-zinc-50">
-                              {new Date(lastCrawled).toLocaleDateString()}
-                            </span>
-                          </div>
-                        )}
-                        {activeAudits.length > 0 && (
-                          <div className="flex justify-between">
-                            <span className="text-zinc-600 dark:text-zinc-400">Active:</span>
-                            <span className="font-medium text-blue-600 dark:text-blue-400">
-                              {activeAudits.length} crawl(s)
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </Link>
-
-                    {pendingApprovalAudits.length > 0 ? (
-                      // Show approval buttons for pending_approval audits
-                      <div className="mt-4 space-y-2">
-                        {pendingApprovalAudits.map((audit) => (
-                          <div
-                            key={audit.id}
-                            className="rounded border border-orange-200 bg-orange-50 p-3 dark:border-orange-800 dark:bg-orange-900/20"
-                          >
-                            <div className="mb-2 flex items-center justify-between">
-                              <span className="text-xs font-medium text-black dark:text-zinc-50">
-                                ⚠️ Approval Required
-                              </span>
-                              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-800 dark:bg-orange-900 dark:text-orange-200">
-                                pending_approval
-                              </span>
-                            </div>
-                            <div className="mb-3 text-xs text-zinc-600 dark:text-zinc-400">
-                              robots.txt check failed or timed out. Please approve to continue crawling.
-                            </div>
-                            <div className="flex flex-wrap gap-2">
-                              <button
-                                onClick={async (e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  if (!confirm('Approve this crawl? This will skip robots.txt check and start crawling immediately.')) return;
-                                  try {
-                                    const res = await fetch(`/api/audits/${audit.id}/approve`, { method: 'POST' });
-                                    if (res.ok) {
-                                      fetchProjects();
-                                    } else {
-                                      const error = await res.json();
-                                      alert(error.error || 'Failed to approve crawl');
+                      {pendingApprovalAudits.length > 0 ? (
+                        // Show approval buttons for pending_approval audits
+                        <div className="space-y-2">
+                          {pendingApprovalAudits.map((audit) => (
+                            <div
+                              key={audit.id}
+                              className="rounded border border-orange-200 bg-orange-50 p-3 dark:border-orange-800 dark:bg-orange-900/20"
+                            >
+                              <div className="mb-2 flex items-center justify-between">
+                                <span className="text-xs font-medium text-black dark:text-zinc-50">
+                                  Approval Required
+                                </span>
+                                <span className="rounded-full bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-800 dark:bg-orange-900 dark:text-orange-200">
+                                  pending_approval
+                                </span>
+                              </div>
+                              <div className="mb-3 text-xs text-zinc-600 dark:text-zinc-400">
+                                robots.txt check failed or timed out. Please approve to continue crawling.
+                              </div>
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  onClick={async (e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    if (!confirm('Approve this crawl? This will skip robots.txt check and start crawling immediately.')) return;
+                                    try {
+                                      const res = await fetch(`/api/audits/${audit.id}/approve`, { method: 'POST' });
+                                      if (res.ok) {
+                                        fetchProjects();
+                                      } else {
+                                        const error = await res.json();
+                                        alert(error.error || 'Failed to approve crawl');
+                                      }
+                                    } catch (error) {
+                                      console.error('Error approving crawl:', error);
+                                      alert('Failed to approve crawl');
                                     }
-                                  } catch (error) {
-                                    console.error('Error approving crawl:', error);
-                                    alert('Failed to approve crawl');
-                                  }
-                                }}
-                                className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700"
-                              >
-                                ✅ Approve & Start Crawl
-                              </button>
-                              <Link
-                                href={`/audits/${audit.id}`}
-                                className="flex-1 rounded bg-blue-600 px-2 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700"
-                              >
-                                View Details →
-                              </Link>
+                                  }}
+                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700 relative z-20 cursor-pointer"
+                                >
+                                  Approve & Start Crawl
+                                </button>
+                                <Link
+                                  href={`/audits/${audit.id}`}
+                                  className="flex-1 rounded bg-blue-600 px-2 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700 relative z-20 cursor-pointer"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  View Details
+                                </Link>
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {activeAudits.length > 0 ? (
-                      // Show control buttons for active audits
-                      <div className="mt-4 space-y-2">
+                          ))}
+                        </div>
+                      ) : activeAudits.length > 0 ? (
+                        // Show control buttons for active audits
+                        <div className="space-y-2">
                         {activeAudits.map((audit) => (
                           <div
                             key={audit.id}
@@ -408,9 +458,9 @@ export default function AllProjectsPage() {
                                     }
                                   }}
                                   disabled={actionLoading !== null}
-                                  className="flex-1 rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white hover:bg-yellow-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="flex-1 rounded bg-yellow-600 px-2 py-1 text-xs font-semibold text-white hover:bg-yellow-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 relative z-20"
                                 >
-                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'pause' ? '⏳...' : '⏸️ Pause'}
+                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'pause' ? 'Loading...' : 'Pause'}
                                 </button>
                               )}
                               {audit.status === 'paused' && (
@@ -436,9 +486,9 @@ export default function AllProjectsPage() {
                                     }
                                   }}
                                   disabled={actionLoading !== null}
-                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="flex-1 rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 relative z-20"
                                 >
-                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'resume' ? '⏳...' : '▶️ Resume'}
+                                  {actionLoading?.auditId === audit.id && actionLoading?.action === 'resume' ? 'Loading...' : 'Resume'}
                                 </button>
                               )}
                               <button
@@ -464,39 +514,41 @@ export default function AllProjectsPage() {
                                   }
                                 }}
                                 disabled={actionLoading !== null}
-                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="flex-1 rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-700 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 relative z-20"
                               >
-                                {actionLoading?.auditId === audit.id && actionLoading?.action === 'stop' ? '⏳...' : '⏹️ Stop'}
+                                {actionLoading?.auditId === audit.id && actionLoading?.action === 'stop' ? 'Loading...' : 'Stop'}
                               </button>
                               <Link
                                 href={`/audits/${audit.id}`}
-                                className="flex-1 rounded bg-blue-600 px-2 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700"
+                                className="flex-1 rounded bg-blue-600 px-2 py-1 text-center text-xs font-semibold text-white hover:bg-blue-700 relative z-20 cursor-pointer"
+                                onClick={(e) => e.stopPropagation()}
                               >
-                                View Details →
+                                View Details
                               </Link>
                             </div>
                           </div>
                         ))}
-                      </div>
-                    ) : (
-                      // Show start crawl button when no active audits
-                      <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (startingCrawl === project.id) {
-                            return; // Prevent duplicate clicks
-                          }
-                          handleStartAutoCrawl(project.id);
-                        }}
-                        disabled={startingCrawl === project.id || optimisticAudits.has(project.audits?.[0]?.id || '')}
-                        className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        {startingCrawl === project.id
-                          ? 'Starting...'
-                          : '🚀 Start Automatic Crawl'}
-                      </button>
-                    )}
+                        </div>
+                      ) : (
+                        // Show start crawl button when no active audits
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (startingCrawl === project.id) {
+                              return; // Prevent duplicate clicks
+                            }
+                            handleStartAutoCrawl(project.id);
+                          }}
+                          disabled={startingCrawl === project.id || optimisticAudits.has(project.audits?.[0]?.id || '')}
+                          className="w-full rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-semibold text-white transition-all duration-300 hover:brightness-110 hover:shadow-xl hover:shadow-[var(--accent)]/50 hover:scale-105 hover:-translate-y-0.5 cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:brightness-100 disabled:hover:shadow-none disabled:hover:scale-100 disabled:hover:translate-y-0 relative z-20"
+                        >
+                          {startingCrawl === project.id
+                            ? 'Starting...'
+                            : 'Start Automatic Crawl'}
+                        </button>
+                      )}
+                    </AnimatedFolder>
                   </div>
                 );
               })}

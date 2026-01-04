@@ -50,36 +50,61 @@ export async function POST(
 
     console.log(`[Stop] ⚠️  Audit ${auditId} marked as stopped immediately. Active jobs will abort on next status check.`);
 
-    // Remove all jobs for this audit from the queue
-    const jobs = await crawlQueue.getJobs(['waiting', 'active', 'delayed']);
-    const auditJobs = jobs.filter((j: Job<CrawlJob>) => j.data?.auditId === auditId);
-
-    let removedCount = 0;
-    for (const job of auditJobs) {
+    // Return immediately - process job removal asynchronously to avoid blocking
+    // This prevents the API from hanging when there are many jobs
+    (async () => {
       try {
-        const state = await job.getState();
-        if (state === 'waiting' || state === 'delayed') {
-          await job.remove();
-          removedCount++;
-        }
-        // Active jobs will check status and abort on next check
+        // Set a timeout to prevent this from running too long
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Job removal timeout')), 30000) // 30 second timeout
+        );
+
+        const removeJobsPromise = (async () => {
+          // Remove all jobs for this audit from the queue
+          // Limit to reasonable number to avoid memory issues
+          const jobs = await crawlQueue.getJobs(['waiting', 'active', 'delayed'], 0, 10000);
+          const auditJobs = jobs.filter((j: Job<CrawlJob>) => j.data?.auditId === auditId);
+
+          let removedCount = 0;
+          let activeCount = 0;
+          
+          for (const job of auditJobs) {
+            try {
+              const state = await job.getState();
+              if (state === 'waiting' || state === 'delayed') {
+                await job.remove();
+                removedCount++;
+              } else if (state === 'active') {
+                // Try to cancel active jobs (Bull doesn't support this directly, but we can mark them)
+                // Active jobs will check status and abort on next check
+                activeCount++;
+              }
+            } catch (error) {
+              console.error(`[Stop] Error processing job ${job.id}:`, error);
+            }
+          }
+
+          console.log(`[Stop] Audit ${auditId} stopped: ${actualPagesCrawled} pages actually crawled (updated from ${audit.pagesCrawled})`);
+          console.log(`[Stop] Audit ${auditId} stopped permanently (cannot be resumed). ${removedCount} jobs removed, ${activeCount} active jobs will abort on next check.`);
+
+          // Clear visited URLs cache (as requested)
+          const { clearVisitedUrls } = await import('@/lib/link-follower');
+          clearVisitedUrls();
+        })();
+
+        await Promise.race([removeJobsPromise, timeoutPromise]);
       } catch (error) {
-        console.error(`Error removing job ${job.id}:`, error);
+        // Log error but don't fail the request - audit is already marked as stopped
+        console.error(`[Stop] Error removing jobs for audit ${auditId} (background):`, error);
+        console.log(`[Stop] Audit ${auditId} is marked as stopped. Active jobs will abort on next status check.`);
       }
-    }
+    })();
 
-    console.log(`[Stop] Audit ${auditId} stopped: ${actualPagesCrawled} pages actually crawled (updated from ${audit.pagesCrawled})`);
-
-    // Clear visited URLs cache (as requested)
-    const { clearVisitedUrls } = await import('@/lib/link-follower');
-    clearVisitedUrls();
-
-    console.log(`[Stop] Audit ${auditId} stopped permanently (cannot be resumed). ${removedCount} jobs removed.`);
-
+    // Return immediately - don't wait for job removal
     return NextResponse.json({
       success: true,
-      message: 'Crawl stopped successfully',
-      removedJobs: removedCount,
+      message: 'Crawl stopped successfully. Jobs are being removed in the background.',
+      removedJobs: 'processing', // Indicate that removal is in progress
     });
   } catch (error) {
     console.error('[Stop] Error:', error);

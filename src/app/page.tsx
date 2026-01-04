@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
+import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface Project {
   id: string;
@@ -330,7 +331,7 @@ export default function Dashboard() {
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-xl">Loading dashboard...</div>
+        <TetrisLoading size="md" speed="normal" loadingText="Loading..." />
       </div>
     );
   }

@@ -421,12 +421,6 @@ export default function AuditDetailPage() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <Link
-              href={`/projects/${audit.project.id}`}
-              className="mb-2 inline-block text-sm text-blue-600 hover:underline dark:text-blue-400"
-            >
-              ← Back to Project
-            </Link>
             <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
               Crawl Attempt Details
             </h1>
@@ -435,10 +429,10 @@ export default function AuditDetailPage() {
             </p>
           </div>
           <Link
-            href="/"
+            href={`/projects/${audit.project.id}`}
             className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
           >
-            ← Back to Dashboard
+            ← Back to Project
           </Link>
         </div>
 

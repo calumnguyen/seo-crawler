@@ -3,6 +3,8 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Magic } from 'magic-sdk';
+import { InfiniteGrid } from '@/components/ui/infinite-grid';
+import TetrisLoading from '@/components/ui/tetris-loader';
 
 function LoginForm() {
   const [email, setEmail] = useState('');
@@ -89,8 +91,12 @@ function LoginForm() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <div className="w-full max-w-md rounded-lg border border-zinc-200 bg-white p-8 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="relative flex min-h-screen items-center justify-center font-sans">
+      {/* Infinite Grid Background */}
+      <InfiniteGrid />
+      
+      {/* Login Form */}
+      <div className="relative z-10 w-full max-w-md rounded-lg border border-zinc-200 bg-white/80 backdrop-blur-md p-8 shadow-lg dark:border-zinc-700 dark:bg-zinc-900/80">
         <div className="mb-6 text-center">
           <h1 className="mb-2 text-3xl font-bold text-black dark:text-zinc-50">
             Welcome Back
@@ -149,7 +155,7 @@ export default function LoginPage() {
   return (
     <Suspense fallback={
       <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-        <div className="text-xl">Loading...</div>
+        <TetrisLoading size="md" speed="normal" loadingText="Loading..." />
       </div>
     }>
       <LoginForm />

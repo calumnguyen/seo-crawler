@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface CrawlResult {
   id: string;
@@ -54,7 +55,7 @@ export default function CrawlsPage() {
   if (loading && crawlResults.length === 0) {
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="text-xl">Loading crawled data...</div>
+        <TetrisLoading size="md" speed="normal" loadingText="Loading..." />
       </div>
     );
   }
