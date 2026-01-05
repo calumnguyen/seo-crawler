@@ -7,11 +7,67 @@ export interface SitemapUrl {
 
 export async function parseSitemap(sitemapUrl: string): Promise<SitemapUrl[]> {
   try {
-    const response = await fetch(sitemapUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SEO-Crawler/1.0)',
-      },
-    });
+    const { fetchWithProxy } = await import('./proxy-fetch');
+    const { getProxyManager } = await import('./proxy-manager');
+    const { getSimpleHeaders } = await import('./browser-headers');
+    const proxyManager = getProxyManager();
+    const hasProxies = proxyManager.hasProxies();
+
+    let response: Response;
+
+    // Try direct connection first (to save proxy bandwidth)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      
+      try {
+        // Use realistic browser headers to bypass fingerprinting
+        const browserHeaders = getSimpleHeaders();
+        
+        response = await fetch(sitemapUrl, {
+          headers: browserHeaders,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+      } catch (directError) {
+        clearTimeout(timeoutId);
+        const isTimeout = directError instanceof Error && (
+          directError.name === 'AbortError' ||
+          directError.message.includes('timeout') ||
+          directError.message.includes('aborted')
+        );
+        
+        // If timeout or connection error, try with proxy if available
+        if (isTimeout && hasProxies) {
+          // fetchWithProxy will automatically add browser headers
+          const result = await fetchWithProxy(sitemapUrl, {
+            retries: 3,
+            retryDelay: 2000,
+            timeout: 45000, // 45 second timeout for slow/blocked sites
+            aggressiveRetry: true, // Try all proxies if one fails
+            minDelayBetweenRetries: 2000, // 2 second minimum delay
+          });
+          response = result.response;
+        } else {
+          throw directError;
+        }
+      }
+    } catch (error) {
+      // Final fallback: try proxy if available
+      if (hasProxies) {
+        // fetchWithProxy will automatically add browser headers
+        const result = await fetchWithProxy(sitemapUrl, {
+          retries: 3,
+          retryDelay: 2000,
+          timeout: 45000, // 45 second timeout for slow/blocked sites
+          aggressiveRetry: true, // Try all proxies if one fails
+          minDelayBetweenRetries: 2000, // 2 second minimum delay
+        });
+        response = result.response;
+      } else {
+        throw error;
+      }
+    }
 
     if (!response.ok) {
       throw new Error(`Failed to fetch sitemap: ${response.status}`);
@@ -72,11 +128,67 @@ async function parseSitemapXml(xml: string, baseUrl?: string): Promise<SitemapUr
 
 export async function fetchSitemapsFromRobotsTxt(robotsTxtUrl: string): Promise<string[]> {
   try {
-    const response = await fetch(robotsTxtUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SEO-Crawler/1.0)',
-      },
-    });
+    const { fetchWithProxy } = await import('./proxy-fetch');
+    const { getProxyManager } = await import('./proxy-manager');
+    const { getSimpleHeaders } = await import('./browser-headers');
+    const proxyManager = getProxyManager();
+    const hasProxies = proxyManager.hasProxies();
+
+    let response: Response;
+
+    // Try direct connection first (to save proxy bandwidth)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      try {
+        // Use realistic browser headers to bypass fingerprinting
+        const browserHeaders = getSimpleHeaders();
+        
+        response = await fetch(robotsTxtUrl, {
+          headers: browserHeaders,
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+      } catch (directError) {
+        clearTimeout(timeoutId);
+        const isTimeout = directError instanceof Error && (
+          directError.name === 'AbortError' ||
+          directError.message.includes('timeout') ||
+          directError.message.includes('aborted')
+        );
+        
+        // If timeout or connection error, try with proxy if available
+        if (isTimeout && hasProxies) {
+          // fetchWithProxy will automatically add browser headers
+          const result = await fetchWithProxy(robotsTxtUrl, {
+            retries: 3,
+            retryDelay: 2000,
+            timeout: 45000, // 45 second timeout for slow/blocked sites
+            aggressiveRetry: true, // Try all proxies if one fails
+            minDelayBetweenRetries: 2000, // 2 second minimum delay
+          });
+          response = result.response;
+        } else {
+          throw directError;
+        }
+      }
+    } catch (error) {
+      // Final fallback: try proxy if available
+      if (hasProxies) {
+        // fetchWithProxy will automatically add browser headers
+        const result = await fetchWithProxy(robotsTxtUrl, {
+          retries: 3,
+          retryDelay: 2000,
+          timeout: 45000, // 45 second timeout for slow/blocked sites
+          aggressiveRetry: true, // Try all proxies if one fails
+          minDelayBetweenRetries: 2000, // 2 second minimum delay
+        });
+        response = result.response;
+      } else {
+        throw error;
+      }
+    }
 
     if (!response.ok) {
       return [];

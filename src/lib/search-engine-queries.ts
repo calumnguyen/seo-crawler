@@ -2,7 +2,17 @@
  * Search Engine Query Module
  * Queries Google/Bing to discover pages that link to a target URL
  * Uses the "link:" operator to find backlinks
+ * 
+ * Features:
+ * - Proxy rotation and management
+ * - CAPTCHA detection and handling
+ * - Rate limiting and retry logic
  */
+
+import { fetchWithProxy } from './proxy-fetch';
+import { getProxyManager } from './proxy-manager';
+import { getBrowserHeaders } from './browser-headers';
+import { getCaptchaSolver, extractReCaptchaSiteKey } from './captcha-solver';
 
 interface SearchResult {
   url: string;
@@ -63,13 +73,227 @@ export async function queryGoogleBacklinks(
           });
         }
         
-        const response = await fetch(searchUrl, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-          },
-        });
+        // Strategy: Try direct connection first (save money), only use proxy on failure/CAPTCHA
+        let response: Response;
+        let html: string;
+        let captchaDetection: any;
+        let proxyUsed: any = null;
+        const timeout = 15000; // 15 second timeout
+
+        try {
+          // Try direct connection first
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), timeout);
+          
+          try {
+            // Use realistic browser headers to bypass fingerprinting
+            const browserHeaders = getBrowserHeaders({ url: searchUrl });
+            
+            response = await fetch(searchUrl, {
+              headers: browserHeaders,
+              signal: controller.signal,
+            });
+            clearTimeout(timeoutId);
+            html = await response.text();
+            
+            // Detect CAPTCHA
+            const { detectCaptchaFromResponse } = await import('./captcha-detector');
+            captchaDetection = detectCaptchaFromResponse(response, html);
+            
+            if (auditId) {
+              const { addAuditLog } = await import('./audit-logs');
+              addAuditLog(auditId, 'backlink-discovery', `✅ Direct connection successful for Google query: "${query}"`, {
+                query,
+                searchEngine: 'google',
+                proxyUsed: null,
+                method: 'direct',
+              } as any);
+            }
+          } catch (directError) {
+            clearTimeout(timeoutId);
+            
+            // Check if timeout, CAPTCHA, or connection error - use proxy
+            const isTimeout = directError instanceof Error && (
+              directError.name === 'AbortError' ||
+              directError.message.includes('timeout') ||
+              directError.message.includes('aborted')
+            );
+            
+            if (isTimeout || captchaDetection?.isCaptcha) {
+              // Timeout or CAPTCHA - try with proxy
+              const proxyManager = getProxyManager();
+              if (proxyManager.hasProxies()) {
+                if (auditId) {
+                  const { addAuditLog } = await import('./audit-logs');
+                  addAuditLog(auditId, 'backlink-discovery', `⏱️ Timeout/CAPTCHA detected, retrying with proxy for query: "${query}"`, {
+                    query,
+                    searchEngine: 'google',
+                    error: directError instanceof Error ? directError.message : String(directError),
+                    method: 'proxy-retry',
+                  } as any);
+                }
+                
+                const result = await fetchWithProxy(searchUrl, {
+                  retries: 3,
+                  retryDelay: 3000,
+                  timeout: 45000, // 45 second timeout for slow/blocked sites
+                  aggressiveRetry: true, // Try all proxies if one fails
+                  minDelayBetweenRetries: 2000, // 2 second minimum delay
+                });
+                response = result.response;
+                html = result.html;
+                captchaDetection = result.captchaDetection;
+                proxyUsed = result.proxyUsed;
+                
+                // Log proxy usage immediately
+                if (proxyUsed && auditId) {
+                  const { addAuditLog } = await import('./audit-logs');
+                  const proxyInfo = `${proxyUsed.host}:${proxyUsed.port}`;
+                  const status = response.ok ? '✅' : '❌';
+                  const statusText = response.ok 
+                    ? (captchaDetection?.isCaptcha ? 'succeeded (but CAPTCHA detected)' : 'succeeded')
+                    : `failed (HTTP ${response.status})`;
+                  addAuditLog(auditId, 'backlink-discovery', `${status} Proxy ${proxyInfo} ${statusText} for query: "${query}"`, {
+                    query,
+                    proxy: proxyInfo,
+                    searchEngine: 'google',
+                    httpStatus: response.status,
+                    proxySuccess: response.ok,
+                    captchaDetected: captchaDetection?.isCaptcha || false,
+                  } as any);
+                }
+              } else {
+                throw directError;
+              }
+            } else {
+              throw directError;
+            }
+          }
+        } catch (error) {
+          // Final fallback: try proxy if available
+          const proxyManager = getProxyManager();
+          if (proxyManager.hasProxies()) {
+            if (auditId) {
+              const { addAuditLog } = await import('./audit-logs');
+              addAuditLog(auditId, 'backlink-discovery', `🔄 Direct connection failed, trying proxy for query: "${query}"`, {
+                query,
+                searchEngine: 'google',
+                error: error instanceof Error ? error.message : String(error),
+                method: 'proxy-fallback',
+              } as any);
+            }
+            
+            const result = await fetchWithProxy(searchUrl, {
+              retries: 3,
+              retryDelay: 3000,
+              timeout: 45000, // 45 second timeout for slow/blocked sites
+              aggressiveRetry: true, // Try all proxies if one fails
+              minDelayBetweenRetries: 2000, // 2 second minimum delay
+            });
+            response = result.response;
+            html = result.html;
+            captchaDetection = result.captchaDetection;
+            proxyUsed = result.proxyUsed;
+            
+            // Log proxy usage immediately
+            if (proxyUsed && auditId) {
+              const { addAuditLog } = await import('./audit-logs');
+              const proxyInfo = `${proxyUsed.host}:${proxyUsed.port}`;
+              const status = response.ok ? '✅' : '❌';
+              const statusText = response.ok 
+                ? (captchaDetection?.isCaptcha ? 'succeeded (but CAPTCHA detected)' : 'succeeded')
+                : `failed (HTTP ${response.status})`;
+              addAuditLog(auditId, 'backlink-discovery', `${status} Proxy ${proxyInfo} ${statusText} for query: "${query}"`, {
+                query,
+                proxy: proxyInfo,
+                searchEngine: 'google',
+                httpStatus: response.status,
+                proxySuccess: response.ok,
+                captchaDetected: captchaDetection?.isCaptcha || false,
+              } as any);
+            }
+          } else {
+            throw error;
+          }
+        }
+        
+        // Handle CAPTCHA detection
+        if (captchaDetection?.isCaptcha) {
+          const captchaMsg = `CAPTCHA detected (${captchaDetection.captchaType}, confidence: ${captchaDetection.confidence})`;
+          console.warn(`[Search] ${captchaMsg} for query: "${query}"`);
+          
+          // Try to solve CAPTCHA if solver is configured
+          const captchaSolver = getCaptchaSolver();
+          let captchaSolved = false;
+          
+          if (captchaDetection.captchaType === 'google-recaptcha' && captchaSolver) {
+            try {
+              const siteKey = extractReCaptchaSiteKey(html);
+              if (siteKey) {
+                if (auditId) {
+                  const { addAuditLog } = await import('./audit-logs');
+                  addAuditLog(auditId, 'backlink-discovery', `🔧 Attempting to solve CAPTCHA for query: "${query}"`, {
+                    query,
+                    captchaType: captchaDetection.captchaType,
+                    searchEngine: 'google',
+                    solving: true,
+                  } as any);
+                }
+                
+                console.log(`[Search] Attempting to solve reCAPTCHA for query: "${query}"`);
+                const solveResult = await captchaSolver.solve(siteKey, searchUrl);
+                
+                if (solveResult.success && solveResult.token) {
+                  console.log(`[Search] ✅ CAPTCHA solved successfully for query: "${query}"`);
+                  if (auditId) {
+                    const { addAuditLog } = await import('./audit-logs');
+                    addAuditLog(auditId, 'backlink-discovery', `✅ CAPTCHA solved successfully for query: "${query}"`, {
+                      query,
+                      captchaType: captchaDetection.captchaType,
+                      searchEngine: 'google',
+                      solved: true,
+                    } as any);
+                  }
+                  captchaSolved = true;
+                  // Note: For search engines, we can't submit the token directly
+                  // The CAPTCHA is shown on the page, so we still need to rotate proxies
+                  // But we've solved it, which may help with future requests
+                } else {
+                  console.warn(`[Search] ⚠️ CAPTCHA solving failed: ${solveResult.error}`);
+                  if (auditId) {
+                    const { addAuditLog } = await import('./audit-logs');
+                    addAuditLog(auditId, 'backlink-discovery', `⚠️ CAPTCHA solving failed for query: "${query}": ${solveResult.error}`, {
+                      query,
+                      captchaType: captchaDetection.captchaType,
+                      searchEngine: 'google',
+                      solved: false,
+                      error: solveResult.error,
+                    } as any);
+                  }
+                }
+              }
+            } catch (solveError) {
+              console.error(`[Search] Error solving CAPTCHA:`, solveError);
+            }
+          }
+          
+          if (auditId) {
+            const { addAuditLog } = await import('./audit-logs');
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            addAuditLog(auditId, 'backlink-discovery', `🛡️ ${captchaMsg}${captchaSolved ? ' (solved)' : ''} for query: "${query}"`, {
+              query,
+              captchaType: captchaDetection.captchaType || 'unknown',
+              confidence: captchaDetection.confidence,
+              indicators: captchaDetection.indicators,
+              searchEngine: 'google',
+              proxyUsed: proxyUsed ? `${proxyUsed.host}:${proxyUsed.port}` : null,
+              captchaSolved,
+              error: true,
+            } as any);
+          }
+          // Skip this query and try next one with different proxy
+          continue;
+        }
         
         if (!response.ok) {
           const errorMsg = `Google query failed: HTTP ${response.status}`;
@@ -80,13 +304,13 @@ export async function queryGoogleBacklinks(
               query,
               status: response.status,
               searchEngine: 'google',
+              proxyUsed: proxyUsed ? `${proxyUsed.host}:${proxyUsed.port}` : null,
               error: true,
             });
           }
           continue;
         }
         
-        const html = await response.text();
         const results = parseGoogleResults(html);
         
         // Log results found
@@ -107,8 +331,10 @@ export async function queryGoogleBacklinks(
           }
         }
         
-        // Rate limiting: wait between queries
-        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+        // Rate limiting: wait between queries (longer delay when using proxies)
+        const proxyManager = getProxyManager();
+        const delay = proxyManager.hasProxies() ? 3000 : 2000; // 3s with proxies, 2s without
+        await new Promise(resolve => setTimeout(resolve, delay));
         
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : String(error);
@@ -265,12 +491,106 @@ export async function queryBingBacklinks(
       });
     }
     
-    const response = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
+    // Use proxy-aware fetch with CAPTCHA detection
+    const { response, html, captchaDetection, proxyUsed } = await fetchWithProxy(searchUrl, {
+      retries: 3,
+      retryDelay: 3000,
+      timeout: 45000, // 45 second timeout for slow/blocked sites
+      aggressiveRetry: true, // Try all proxies if one fails
+      minDelayBetweenRetries: 2000, // 2 second minimum delay
     });
+    
+    // Log proxy usage immediately
+    if (proxyUsed && auditId) {
+      const { addAuditLog } = await import('./audit-logs');
+      const proxyInfo = `${proxyUsed.host}:${proxyUsed.port}`;
+      const status = response.ok ? '✅' : '❌';
+      const statusText = response.ok 
+        ? (captchaDetection?.isCaptcha ? 'succeeded (but CAPTCHA detected)' : 'succeeded')
+        : `failed (HTTP ${response.status})`;
+      addAuditLog(auditId, 'backlink-discovery', `${status} Proxy ${proxyInfo} ${statusText} for Bing query: "${query}"`, {
+        query,
+        proxy: proxyInfo,
+        searchEngine: 'bing',
+        httpStatus: response.status,
+        proxySuccess: response.ok,
+        captchaDetected: captchaDetection?.isCaptcha || false,
+      } as any);
+    }
+    
+    // Handle CAPTCHA detection
+    if (captchaDetection?.isCaptcha) {
+      const captchaMsg = `CAPTCHA detected (${captchaDetection.captchaType}, confidence: ${captchaDetection.confidence})`;
+      console.warn(`[Search] ${captchaMsg} for query: "${query}"`);
+      
+      // Try to solve CAPTCHA if solver is configured
+      const captchaSolver = getCaptchaSolver();
+      let captchaSolved = false;
+      
+      if (captchaDetection.captchaType === 'google-recaptcha' && captchaSolver) {
+        try {
+          const siteKey = extractReCaptchaSiteKey(html);
+          if (siteKey) {
+            if (auditId) {
+              const { addAuditLog } = await import('./audit-logs');
+              addAuditLog(auditId, 'backlink-discovery', `🔧 Attempting to solve CAPTCHA for Bing query: "${query}"`, {
+                query,
+                captchaType: captchaDetection.captchaType,
+                searchEngine: 'bing',
+                solving: true,
+              } as any);
+            }
+            
+            console.log(`[Search] Attempting to solve reCAPTCHA for Bing query: "${query}"`);
+            const solveResult = await captchaSolver.solve(siteKey, searchUrl);
+            
+            if (solveResult.success && solveResult.token) {
+              console.log(`[Search] ✅ CAPTCHA solved successfully for Bing query: "${query}"`);
+              if (auditId) {
+                const { addAuditLog } = await import('./audit-logs');
+                addAuditLog(auditId, 'backlink-discovery', `✅ CAPTCHA solved successfully for Bing query: "${query}"`, {
+                  query,
+                  captchaType: captchaDetection.captchaType,
+                  searchEngine: 'bing',
+                  solved: true,
+                } as any);
+              }
+              captchaSolved = true;
+            } else {
+              console.warn(`[Search] ⚠️ CAPTCHA solving failed: ${solveResult.error}`);
+              if (auditId) {
+                const { addAuditLog } = await import('./audit-logs');
+                addAuditLog(auditId, 'backlink-discovery', `⚠️ CAPTCHA solving failed for Bing query: "${query}": ${solveResult.error}`, {
+                  query,
+                  captchaType: captchaDetection.captchaType,
+                  searchEngine: 'bing',
+                  solved: false,
+                  error: solveResult.error,
+                } as any);
+              }
+            }
+          }
+        } catch (solveError) {
+          console.error(`[Search] Error solving CAPTCHA:`, solveError);
+        }
+      }
+      
+      if (auditId) {
+        const { addAuditLog } = await import('./audit-logs');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        addAuditLog(auditId, 'backlink-discovery', `🛡️ ${captchaMsg}${captchaSolved ? ' (solved)' : ''} for query: "${query}"`, {
+          query,
+          captchaType: captchaDetection.captchaType || 'unknown',
+          confidence: captchaDetection.confidence,
+          indicators: captchaDetection.indicators,
+          searchEngine: 'bing',
+          proxyUsed: proxyUsed ? `${proxyUsed.host}:${proxyUsed.port}` : null,
+          captchaSolved,
+          error: true,
+        } as any);
+      }
+      return [];
+    }
     
     if (!response.ok) {
       const errorMsg = `Bing query failed: HTTP ${response.status}`;
@@ -281,13 +601,13 @@ export async function queryBingBacklinks(
           query,
           status: response.status,
           searchEngine: 'bing',
+          proxyUsed: proxyUsed ? `${proxyUsed.host}:${proxyUsed.port}` : null,
           error: true,
         });
       }
       return [];
     }
     
-    const html = await response.text();
     const results = parseBingResults(html);
     
     // Log results found

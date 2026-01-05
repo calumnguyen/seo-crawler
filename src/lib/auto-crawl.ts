@@ -4,6 +4,7 @@ import { getRobotsTxt, normalizeUrl } from './robots';
 import { crawlQueue } from './queue'; // Import queue directly
 import { shouldCrawlUrlInAudit, shouldCrawlUrlsInAudit } from './deduplication';
 import { addAuditLog } from './audit-logs';
+import { getSimpleHeaders } from './browser-headers';
 
 export async function startAutomaticCrawl(
   auditId: string,
@@ -212,24 +213,161 @@ export async function startAutomaticCrawl(
       let foundRobotsTxt = false;
       let lastError: Error | null = null;
       
-      // Try each URL with a shorter timeout per attempt
+      // Try each URL with direct connection first, then proxy on failure
+      const { fetchWithProxy } = await import('./proxy-fetch');
+      const { getProxyManager } = await import('./proxy-manager');
+      const proxyManager = getProxyManager();
+      const hasProxies = proxyManager.hasProxies();
+
       for (const testUrl of uniqueUrls) {
         try {
           addAuditLog(auditId, 'setup', `  Trying: ${testUrl}`, { url: testUrl });
           
-          const response = await fetch(testUrl, {
-            headers: {
-              'User-Agent': 'SEO-Crawler/1.0',
-            },
-            signal: AbortSignal.timeout(8000), // 8 second timeout per attempt
-          });
+          let response: Response;
+          let proxyUsed: string | null = null;
+
+          // Try direct connection first (to save proxy bandwidth)
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 8000);
+            
+            try {
+              // Use realistic browser headers to bypass fingerprinting
+              const browserHeaders = getSimpleHeaders();
+              
+              response = await fetch(testUrl, {
+                headers: browserHeaders,
+                signal: controller.signal,
+              });
+              clearTimeout(timeoutId);
+              
+              if (auditId) {
+                addAuditLog(auditId, 'setup', `  ✅ Direct connection successful for ${testUrl}`, { url: testUrl, method: 'direct' });
+              }
+            } catch (directError) {
+              clearTimeout(timeoutId);
+              const isTimeout = directError instanceof Error && (
+                directError.name === 'AbortError' ||
+                directError.message.includes('timeout') ||
+                directError.message.includes('aborted')
+              );
+              
+              // If timeout or connection error, try with proxy if available
+              if (isTimeout && hasProxies) {
+                addAuditLog(auditId, 'setup', `  ⏱️ Timeout/error, retrying with proxy: ${testUrl}`, { url: testUrl, error: directError instanceof Error ? directError.message : String(directError), method: 'proxy-retry' });
+                
+                try {
+                  // Get proxy info before attempting (for logging even on failure)
+                  const proxyBeforeAttempt = proxyManager.getNextProxy();
+                  const proxyInfo = proxyBeforeAttempt ? `${proxyBeforeAttempt.host}:${proxyBeforeAttempt.port}` : 'unknown';
+                  
+                  addAuditLog(auditId, 'setup', `  🔗 Attempting with proxy ${proxyInfo} for ${testUrl}`, { 
+                    url: testUrl, 
+                    proxy: proxyInfo,
+                  });
+                  
+                  // fetchWithProxy will automatically add browser headers
+                  const result = await fetchWithProxy(testUrl, {
+                    retries: 3, // More retries for robots.txt
+                    retryDelay: 2000,
+                    timeout: 45000, // 45 second timeout for slow/blocked sites
+                    aggressiveRetry: true, // Try all proxies if one fails
+                    minDelayBetweenRetries: 2000, // 2 second minimum delay
+                  });
+                  response = result.response;
+                  proxyUsed = result.proxyUsed ? `${result.proxyUsed.host}:${result.proxyUsed.port}` : proxyInfo;
+                  
+                  // Log proxy usage immediately (success or failure)
+                  if (auditId && proxyUsed) {
+                    const status = response.ok ? '✅' : '❌';
+                    const statusText = response.ok ? 'succeeded' : `failed (HTTP ${response.status})`;
+                    addAuditLog(auditId, 'setup', `  ${status} Proxy ${proxyUsed} ${statusText} for ${testUrl}`, { 
+                      url: testUrl, 
+                      proxy: proxyUsed,
+                      httpStatus: response.status,
+                      proxySuccess: response.ok,
+                    });
+                  }
+                } catch (proxyError) {
+                  // Proxy attempt also failed - log which proxy was attempted
+                  const proxyErrorMsg = proxyError instanceof Error ? proxyError.message : String(proxyError);
+                  const attemptedProxy = proxyManager.getNextProxy(); // Get current proxy for logging
+                  const proxyInfo = attemptedProxy ? `${attemptedProxy.host}:${attemptedProxy.port}` : 'multiple proxies tried';
+                  
+                  addAuditLog(auditId, 'setup', `  ❌ Proxy ${proxyInfo} failed: ${testUrl} - ${proxyErrorMsg}`, { 
+                    url: testUrl, 
+                    proxy: proxyInfo,
+                    error: proxyErrorMsg,
+                    method: 'proxy-failed',
+                  });
+                  throw proxyError; // Re-throw to trigger final fallback
+                }
+              } else {
+                throw directError;
+              }
+            }
+          } catch (error) {
+            // Final fallback: try proxy if available and not already tried
+            if (hasProxies && !proxyUsed) {
+              addAuditLog(auditId, 'setup', `  🔄 Direct connection failed, trying proxy: ${testUrl}`, { url: testUrl, error: error instanceof Error ? error.message : String(error), method: 'proxy-fallback' });
+              
+              try {
+                // Get proxy info before attempting (for logging even on failure)
+                const proxyBeforeAttempt = proxyManager.getNextProxy();
+                const proxyInfo = proxyBeforeAttempt ? `${proxyBeforeAttempt.host}:${proxyBeforeAttempt.port}` : 'unknown';
+                
+                addAuditLog(auditId, 'setup', `  🔗 Attempting with proxy ${proxyInfo} for ${testUrl}`, { 
+                  url: testUrl, 
+                  proxy: proxyInfo,
+                });
+                
+                const result = await fetchWithProxy(testUrl, {
+                  headers: {
+                    'User-Agent': 'SEO-Crawler/1.0',
+                  },
+                  retries: 2, // Will try up to 3 proxies total (initial + 2 retries)
+                  retryDelay: 2000,
+                  timeout: 20000, // Increased timeout for proxy attempts (20 seconds)
+                });
+                response = result.response;
+                proxyUsed = result.proxyUsed ? `${result.proxyUsed.host}:${result.proxyUsed.port}` : proxyInfo;
+                
+                // Log proxy usage immediately (success or failure)
+                if (auditId && proxyUsed) {
+                  const status = response.ok ? '✅' : '❌';
+                  const statusText = response.ok ? 'succeeded' : `failed (HTTP ${response.status})`;
+                  addAuditLog(auditId, 'setup', `  ${status} Proxy ${proxyUsed} ${statusText} for ${testUrl}`, { 
+                    url: testUrl, 
+                    proxy: proxyUsed,
+                    httpStatus: response.status,
+                    proxySuccess: response.ok,
+                  });
+                }
+              } catch (proxyError) {
+                // Proxy attempt also failed - log which proxy was attempted
+                const proxyErrorMsg = proxyError instanceof Error ? proxyError.message : String(proxyError);
+                const attemptedProxy = proxyManager.getNextProxy(); // Get current proxy for logging
+                const proxyInfo = attemptedProxy ? `${attemptedProxy.host}:${attemptedProxy.port}` : 'multiple proxies tried';
+                
+                addAuditLog(auditId, 'setup', `  ❌ Proxy ${proxyInfo} failed: ${testUrl} - ${proxyErrorMsg}`, { 
+                  url: testUrl, 
+                  proxy: proxyInfo,
+                  error: proxyErrorMsg,
+                  method: 'proxy-failed',
+                });
+                throw proxyError; // Re-throw to continue to next URL
+              }
+            } else {
+              throw error;
+            }
+          }
 
           if (response.ok) {
             robotsTxtUrl = testUrl;
             robotsTxt = await getRobotsTxt(baseUrl);
             crawlDelay = robotsTxt ? robotsTxt.getCrawlDelay() || null : null;
-            console.log(`[Auto-Crawl] ✅ robots.txt found at ${robotsTxtUrl}`);
-            addAuditLog(auditId, 'setup', `✅ robots.txt fetched successfully: ${robotsTxtUrl}`, { url: robotsTxtUrl, success: true });
+            console.log(`[Auto-Crawl] ✅ robots.txt found at ${robotsTxtUrl}${proxyUsed ? ` (via proxy ${proxyUsed})` : ''}`);
+            addAuditLog(auditId, 'setup', `✅ robots.txt fetched successfully: ${robotsTxtUrl}${proxyUsed ? ` (proxy: ${proxyUsed})` : ''}`, { url: robotsTxtUrl, success: true, proxy: proxyUsed });
             
             // Update domain record with robots.txt URL and crawl delay
             if (domainId) {
@@ -251,8 +389,8 @@ export async function startAutomaticCrawl(
             break; // Success! Exit loop
           } else if (response.status !== 404) {
             // Non-404 errors might be temporary, log but continue trying
-            console.log(`[Auto-Crawl] ⚠️  Error ${response.status} at ${testUrl}, trying next...`);
-            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: HTTP ${response.status}`, { url: testUrl, status: response.status });
+            console.log(`[Auto-Crawl] ⚠️  Error ${response.status} at ${testUrl}${proxyUsed ? ` (via proxy ${proxyUsed})` : ''}, trying next...`);
+            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: HTTP ${response.status}${proxyUsed ? ` (proxy: ${proxyUsed})` : ''}`, { url: testUrl, status: response.status, proxy: proxyUsed });
           }
         } catch (error: unknown) {
           const errorMessage = error instanceof Error ? error.message : String(error);
@@ -261,23 +399,24 @@ export async function startAutomaticCrawl(
           // Log but continue trying other URLs
           if (errorMessage.includes('timeout') || errorMessage.includes('aborted')) {
             console.log(`[Auto-Crawl] ⚠️  Timeout at ${testUrl}, trying next...`);
-            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: Timeout`, { url: testUrl, error: 'timeout' });
+            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: Timeout (direct + proxy attempts failed)`, { url: testUrl, error: 'timeout' });
           } else {
             console.log(`[Auto-Crawl] ⚠️  Error at ${testUrl}: ${errorMessage}, trying next...`);
-            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: ${errorMessage}`, { url: testUrl, error: errorMessage });
+            addAuditLog(auditId, 'setup', `  ⚠️ ${testUrl}: ${errorMessage} (direct + proxy attempts failed)`, { url: testUrl, error: errorMessage });
           }
         }
       }
       
       if (!foundRobotsTxt) {
-        // All attempts failed - require approval
-        const errorMessage = lastError instanceof Error ? lastError.message : 'All robots.txt locations failed';
-        console.log(`[Auto-Crawl] ⚠️  robots.txt NOT FOUND after trying ${uniqueUrls.length} locations - requires approval`);
-        addAuditLog(auditId, 'setup', `❌ robots.txt not found after trying ${uniqueUrls.length} locations`, { 
+        // All attempts failed (direct + proxies) - require approval
+        const errorMessage = lastError instanceof Error ? lastError.message : 'All robots.txt locations failed (direct + proxy attempts)';
+        console.log(`[Auto-Crawl] ⚠️  robots.txt NOT FOUND after trying ${uniqueUrls.length} locations (with direct + proxy attempts) - requires approval`);
+        addAuditLog(auditId, 'setup', `❌ robots.txt not found after trying ${uniqueUrls.length} locations (direct + proxy attempts failed)`, { 
           urls: uniqueUrls, 
           success: false, 
           error: errorMessage,
-          attempts: uniqueUrls.length
+          attempts: uniqueUrls.length,
+          proxiesUsed: hasProxies
         });
         await prisma.audit.update({
           where: { id: auditId },

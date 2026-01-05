@@ -24,14 +24,78 @@ export async function getRobotsTxt(
       return cached.data;
     }
 
-    // Fetch robots.txt
-    const response = await fetch(robotsTxtUrl, {
-      headers: {
-        'User-Agent': userAgent,
-      },
-      // Add timeout to prevent hanging
-      signal: AbortSignal.timeout(10000), // 10 second timeout
-    });
+    // Use proxy-aware fetch with "direct first, proxy on failure" strategy
+    const { fetchWithProxy } = await import('./proxy-fetch');
+    const { getProxyManager } = await import('./proxy-manager');
+    const { getSimpleHeaders } = await import('./browser-headers');
+    const proxyManager = getProxyManager();
+    const hasProxies = proxyManager.hasProxies();
+
+    let response: Response;
+    const timeout = 15000; // 15 second timeout for direct connection
+
+    // Try direct connection first (save proxy bandwidth)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      
+      try {
+        const browserHeaders = getSimpleHeaders();
+        response = await fetch(robotsTxtUrl, {
+          headers: {
+            ...browserHeaders,
+            'User-Agent': userAgent, // Override with provided userAgent
+          },
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+      } catch (directError) {
+        clearTimeout(timeoutId);
+        
+        // Check if it's a timeout or connection error (likely IP blocked)
+        const isTimeout = directError instanceof Error && (
+          directError.name === 'AbortError' ||
+          directError.message.includes('timeout') ||
+          directError.message.includes('aborted') ||
+          directError.message.includes('ECONNRESET') ||
+          directError.message.includes('ECONNREFUSED')
+        );
+        
+        // If timeout/error and proxies available, retry with proxy
+        if (isTimeout && hasProxies) {
+          const result = await fetchWithProxy(robotsTxtUrl, {
+            headers: {
+              'User-Agent': userAgent,
+            },
+            retries: 3,
+            retryDelay: 2000,
+            timeout: 45000, // 45 second timeout for slow/blocked sites
+            aggressiveRetry: true, // Try all proxies if one fails
+            minDelayBetweenRetries: 2000,
+          });
+          response = result.response;
+        } else {
+          throw directError;
+        }
+      }
+    } catch (error) {
+      // Final fallback: try proxy if available
+      if (hasProxies) {
+        const result = await fetchWithProxy(robotsTxtUrl, {
+          headers: {
+            'User-Agent': userAgent,
+          },
+          retries: 3,
+          retryDelay: 2000,
+          timeout: 45000,
+          aggressiveRetry: true,
+          minDelayBetweenRetries: 2000,
+        });
+        response = result.response;
+      } else {
+        throw error;
+      }
+    }
 
     let robotsContent = '';
     if (response.ok) {

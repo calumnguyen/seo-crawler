@@ -33,12 +33,14 @@ export async function checkLinkStatus(
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     
+    // Use realistic browser headers to bypass fingerprinting
+    const { getSimpleHeaders } = await import('./browser-headers');
+    const browserHeaders = getSimpleHeaders();
+    
     const response = await fetch(url, {
       method: 'HEAD', // Use HEAD to avoid downloading full content
       signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; SEO-Crawler/1.0)',
-      },
+      headers: browserHeaders,
     });
     
     clearTimeout(timeoutId);

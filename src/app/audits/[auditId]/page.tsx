@@ -1089,6 +1089,11 @@ export default function AuditDetailPage() {
                             {new Date(log.timestamp).toLocaleTimeString()}
                           </span>{' '}
                           {highlightText(log.message, logSearch.crawled)}
+                          {(log.metadata as any)?.proxy && (
+                            <span className="ml-2 rounded bg-purple-100 px-1 text-xs text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                              🔗 {(log.metadata as any).proxy}
+                            </span>
+                          )}
                         </div>
                       );
                     })
@@ -1157,7 +1162,7 @@ export default function AuditDetailPage() {
             </div>
 
             {/* External Backlink Discovery Logs */}
-            <div className="mb-4">
+            <div className="mb-4 mt-6">
               <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900">
                 <div className="border-b border-zinc-200 bg-blue-50 px-4 py-2 dark:border-zinc-700 dark:bg-blue-900/20">
                   <div className="flex items-center justify-between">
@@ -1219,6 +1224,11 @@ export default function AuditDetailPage() {
                           {metadata?.searchEngine && (
                             <span className="ml-2 rounded bg-blue-100 px-1 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
                               {metadata.searchEngine}
+                            </span>
+                          )}
+                          {metadata?.proxyUsed && (
+                            <span className="ml-2 rounded bg-purple-100 px-1 text-xs text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                              🔗 {metadata.proxyUsed}
                             </span>
                           )}
                         </div>

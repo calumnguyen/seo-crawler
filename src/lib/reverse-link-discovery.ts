@@ -51,6 +51,17 @@ export async function discoverBacklinksForPage(
     
     if (searchResults.length === 0) {
       console.log(`[Reverse-Discovery] No backlink sources found for: ${targetUrl}`);
+      addAuditLog(
+        auditId,
+        'backlink-discovery',
+        `✅ Backlink discovery complete for ${targetUrl}: No sources found`,
+        {
+          targetUrl,
+          sourcesFound: 0,
+          queued: 0,
+          completed: true,
+        }
+      );
       return 0;
     }
     
@@ -153,7 +164,20 @@ export async function discoverBacklinksForPage(
       }
     }
     
-    // Log discovery summary
+    // Log discovery summary to backlink-discovery logs
+    addAuditLog(
+      auditId,
+      'backlink-discovery',
+      `✅ Backlink discovery complete for ${targetUrl}: Found ${searchResults.length} source(s), queued ${queuedCount} for crawling`,
+      {
+        targetUrl,
+        sourcesFound: searchResults.length,
+        queued: queuedCount,
+        completed: true,
+      }
+    );
+    
+    // Also log to crawled category for visibility
     addAuditLog(
       auditId,
       'crawled',
@@ -171,6 +195,16 @@ export async function discoverBacklinksForPage(
     
   } catch (error) {
     console.error(`[Reverse-Discovery] Error discovering backlinks for ${targetUrl}:`, error);
+    addAuditLog(
+      auditId,
+      'backlink-discovery',
+      `❌ Backlink discovery failed for ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        targetUrl,
+        error: error instanceof Error ? error.message : String(error),
+        completed: true,
+      }
+    );
     return 0;
   }
 }

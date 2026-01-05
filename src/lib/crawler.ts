@@ -1,23 +1,33 @@
 import * as cheerio from 'cheerio';
 import { createHash } from 'crypto';
 import type { SEOData, ImageData, LinkData, OGTags, PerformanceMetrics, MobileMetrics } from '@/types/seo';
+import { fetchWithProxy } from './proxy-fetch';
+import { getProxyManager } from './proxy-manager';
+import { getBrowserHeaders } from './browser-headers';
 
 const MAX_REDIRECTS = 10;
 
-// Helper function to follow redirects manually and track the chain
+// Helper function to follow redirects manually and track the chain (with proxy support)
 async function fetchWithRedirectTracking(
   url: string,
   options: RequestInit = {},
-  maxRedirects = MAX_REDIRECTS
+  maxRedirects = MAX_REDIRECTS,
+  auditId?: string
 ): Promise<{
   response: Response;
   finalUrl: string;
   redirectChain: string[];
   redirectCount: number;
+  proxyUsed?: string | null;
+  html: string;
 }> {
   const redirectChain: string[] = [url];
   let currentUrl = url;
   let redirectCount = 0;
+  let lastProxyUsed: string | null = null;
+
+  const proxyManager = getProxyManager();
+  const useProxies = proxyManager.hasProxies();
 
   for (let i = 0; i < maxRedirects; i++) {
     // Check for redirect loops
@@ -25,10 +35,152 @@ async function fetchWithRedirectTracking(
       throw new Error(`Redirect loop detected: ${currentUrl}`);
     }
 
-    const response = await fetch(currentUrl, {
-      ...options,
-      redirect: 'manual', // Don't follow redirects automatically
-    });
+    let response: Response;
+    let html: string;
+    const timeout = 15000; // 15 second timeout - if exceeded, likely IP blocked
+
+    // Strategy: Try direct connection first (save money), only use proxy on failure/timeout
+    try {
+      // Try direct connection first
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      
+      try {
+        // Use realistic browser headers for direct connection
+        const browserHeaders = getBrowserHeaders({ url: currentUrl });
+        const headersWithBrowser = {
+          ...browserHeaders,
+          ...(options.headers || {}),
+        };
+        
+        response = await fetch(currentUrl, {
+          ...options,
+          headers: headersWithBrowser,
+          redirect: 'manual',
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        html = await response.text();
+        
+        // Success with direct connection - no proxy needed
+        if (auditId) {
+          const { addAuditLog } = await import('./audit-logs');
+          addAuditLog(auditId, 'crawled', `✅ Direct connection successful for ${new URL(currentUrl).pathname}`, {
+            url: currentUrl,
+            proxy: null,
+            method: 'direct',
+          } as any);
+        }
+      } catch (directError) {
+        clearTimeout(timeoutId);
+        
+        // Check if it's a timeout or connection error (likely IP blocked)
+        const isTimeout = directError instanceof Error && (
+          directError.name === 'AbortError' ||
+          directError.message.includes('timeout') ||
+          directError.message.includes('aborted') ||
+          directError.message.includes('ECONNRESET') ||
+          directError.message.includes('ECONNREFUSED')
+        );
+        
+        if (isTimeout && useProxies) {
+          // Timeout/connection error - likely IP blocked, try with proxy
+          const proxy = proxyManager.getNextProxy();
+          const proxyInfo = proxy ? `${proxy.host}:${proxy.port}` : null;
+          
+          if (auditId) {
+            const { addAuditLog } = await import('./audit-logs');
+            addAuditLog(auditId, 'crawled', `⏱️ Timeout/connection error, retrying with proxy: ${proxyInfo || 'none'}`, {
+              url: currentUrl,
+              proxy: proxyInfo,
+              error: directError instanceof Error ? directError.message : String(directError),
+              method: 'proxy-retry',
+            } as any);
+          }
+          
+          if (proxy) {
+            try {
+              const result = await fetchWithProxy(currentUrl, {
+                ...options,
+                retries: 2, // More retries for general crawls
+                retryDelay: 2000,
+                skipCaptchaDetection: true,
+                timeout: Math.max(timeout, 45000), // At least 45 seconds for slow sites
+                aggressiveRetry: true, // Try all proxies if one fails
+                minDelayBetweenRetries: 2000, // 2 second minimum delay
+              });
+
+              response = result.response;
+              html = result.html;
+              lastProxyUsed = result.proxyUsed ? `${result.proxyUsed.host}:${result.proxyUsed.port}` : null;
+
+              // Record proxy success/failure
+              if (result.proxyUsed) {
+                if (response.ok) {
+                  proxyManager.recordSuccess(result.proxyUsed);
+                } else if (response.status >= 400 && response.status !== 429) {
+                  proxyManager.recordFailure(result.proxyUsed, `HTTP ${response.status}`);
+                }
+              }
+            } catch (proxyError) {
+              // Proxy also failed, throw original error
+              throw directError;
+            }
+          } else {
+            // No proxies available, throw original error
+            throw directError;
+          }
+        } else {
+          // Not a timeout or no proxies - throw error
+          throw directError;
+        }
+      }
+    } catch (error) {
+      // Final fallback: if we have proxies and haven't tried them yet, try now
+      if (useProxies && !lastProxyUsed) {
+        const proxy = proxyManager.getNextProxy();
+        if (proxy) {
+          if (auditId) {
+            const { addAuditLog } = await import('./audit-logs');
+            addAuditLog(auditId, 'crawled', `🔄 Direct connection failed, trying proxy: ${proxy.host}:${proxy.port}`, {
+              url: currentUrl,
+              proxy: `${proxy.host}:${proxy.port}`,
+              error: error instanceof Error ? error.message : String(error),
+              method: 'proxy-fallback',
+            } as any);
+          }
+          
+          try {
+            const result = await fetchWithProxy(currentUrl, {
+              ...options,
+              retries: 1,
+              retryDelay: 1000,
+              skipCaptchaDetection: true,
+              timeout: timeout,
+            });
+
+            response = result.response;
+            html = result.html;
+            lastProxyUsed = result.proxyUsed ? `${result.proxyUsed.host}:${result.proxyUsed.port}` : null;
+
+            if (result.proxyUsed) {
+              if (response.ok) {
+                proxyManager.recordSuccess(result.proxyUsed);
+              } else if (response.status >= 400 && response.status !== 429) {
+                proxyManager.recordFailure(result.proxyUsed, `HTTP ${response.status}`);
+              }
+            }
+          } catch (proxyError) {
+            // Both direct and proxy failed
+            throw error;
+          }
+        } else {
+          throw error;
+        }
+      } else {
+        throw error;
+      }
+    }
 
     // If not a redirect, return
     if (![301, 302, 307, 308].includes(response.status)) {
@@ -37,6 +189,8 @@ async function fetchWithRedirectTracking(
         finalUrl: currentUrl,
         redirectChain,
         redirectCount,
+        proxyUsed: lastProxyUsed,
+        html,
       };
     }
 
@@ -448,18 +602,21 @@ function calculatePerformanceMetrics(
   };
 }
 
-export async function crawlUrl(url: string): Promise<SEOData> {
+export async function crawlUrl(url: string, auditId?: string): Promise<SEOData> {
   const startTime = Date.now();
   
   try {
-    // Fetch with redirect tracking
-    const { response, finalUrl, redirectChain, redirectCount } = await fetchWithRedirectTracking(
+    // Fetch with redirect tracking (with proxy support)
+    // Use realistic browser headers to bypass fingerprinting
+    const browserHeaders = getBrowserHeaders({ url });
+    
+    const { response, finalUrl, redirectChain, redirectCount, proxyUsed, html } = await fetchWithRedirectTracking(
       url,
       {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; SEO-Crawler/1.0)',
-        },
-      }
+        headers: browserHeaders,
+      },
+      MAX_REDIRECTS,
+      auditId
     );
 
     const statusCode = response.status;
@@ -524,7 +681,7 @@ export async function crawlUrl(url: string): Promise<SEOData> {
       };
     }
 
-    const html = await response.text();
+    // HTML was already fetched by fetchWithRedirectTracking (either via proxy or direct)
     const contentLength = html.length;
     const $ = cheerio.load(html);
     

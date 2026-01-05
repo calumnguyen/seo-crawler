@@ -32,8 +32,27 @@ export async function POST(
       );
     }
 
+    // Update status to in_progress before starting crawl (so UI updates immediately)
+    await prisma.audit.update({
+      where: { id: auditId },
+      data: {
+        status: 'in_progress',
+        startedAt: new Date(),
+      },
+    });
+
     // Start the crawl (will skip robots.txt check since it's approved)
-    await startAutomaticCrawl(auditId, [], true); // true = skip robots.txt check
+    // Don't await - let it run in background so API responds immediately
+    startAutomaticCrawl(auditId, [], true).catch((error) => {
+      console.error('[API] Error in approved crawl start:', error);
+      // Update status to failed if crawl fails to start
+      prisma.audit.update({
+        where: { id: auditId },
+        data: { status: 'failed' },
+      }).catch((updateError) => {
+        console.error('[API] Failed to update audit status to failed:', updateError);
+      });
+    });
 
     return NextResponse.json({
       success: true,

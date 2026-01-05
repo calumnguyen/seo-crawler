@@ -106,7 +106,7 @@ function limitRedirectChain(chain: string[] | undefined): string[] | null {
 
 export async function saveCrawlResultToDb(
   seoData: SEOData,
-  auditId: string,
+  auditId: string | null,
   domainId?: string,
   baseUrl?: string // Optional baseUrl for consistent normalization
 ) {
@@ -115,13 +115,14 @@ export async function saveCrawlResultToDb(
   const normalizedUrl = normalizeUrl(seoData.url, baseUrl);
   
   // OPTIMIZED: Get audit info and check duplicates in parallel
+  // If auditId is null, skip audit-specific checks (for external domains)
   const [audit, existingInAudit] = await Promise.all([
-    prisma.audit.findUnique({
+    auditId ? prisma.audit.findUnique({
       where: { id: auditId },
       select: { projectId: true },
-    }),
-    // Check in current audit first (most common case)
-    prisma.crawlResult.findFirst({
+    }) : Promise.resolve(null),
+    // Check in current audit first (most common case) - only if auditId is provided
+    auditId ? prisma.crawlResult.findFirst({
       where: {
         auditId,
         url: normalizedUrl,
@@ -129,7 +130,7 @@ export async function saveCrawlResultToDb(
       select: {
         id: true,
       },
-    }),
+    }) : Promise.resolve(null),
   ]);
 
   if (existingInAudit) {
