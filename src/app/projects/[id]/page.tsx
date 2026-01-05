@@ -101,7 +101,7 @@ export default function ProjectDetailPage() {
         setRobotsAvailable(false);
       }
 
-      if (sitemapsRes.ok) {
+      if (sitemapsRes.ok && 'json' in sitemapsRes) {
         const sitemapsData = await sitemapsRes.json();
         setSitemaps(Array.isArray(sitemapsData) ? sitemapsData : []);
       } else {

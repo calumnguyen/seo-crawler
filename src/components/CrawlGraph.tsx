@@ -128,7 +128,7 @@ export default function CrawlGraph({ projectId }: CrawlGraphProps) {
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const fgRef = useRef<any>();
+  const fgRef = useRef<any>(null);
   const hasCenteredRef = useRef(false);
 
   useEffect(() => {
