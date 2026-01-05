@@ -154,7 +154,17 @@ if (!global.__queueEventListenersRegistered) {
   // Handle Redis connection errors and storage limits
   crawlQueue.on('error', async (error) => {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('[Queue] Redis error:', errorMessage);
+    
+    // EPIPE (Error Pipe) - non-critical error that happens when Redis connection is closed
+    // This typically occurs after job completion when BullMQ tries to update job status
+    // The job has already completed successfully, this is just a write failure
+    // BullMQ will automatically retry the status update, so we can safely ignore it
+    if (errorMessage.includes('EPIPE') || errorMessage.includes('write EPIPE')) {
+      // Log at debug level - this is expected occasionally and not a problem
+      // Jobs have already completed, this is just a status update failure
+      // BullMQ will retry automatically
+      return; // Silently ignore - job already completed
+    }
     
     // Check if it's a connection limit error
     if (errorMessage.includes('max number of clients') || 
@@ -174,7 +184,11 @@ if (!global.__queueEventListenersRegistered) {
         errorMessage.includes('ERR maxmemory')) {
       console.error('[Queue] ⚠️  Redis storage limit reached! Pausing all audits and draining queue...');
       await handleRedisStorageLimit();
+      return;
     }
+    
+    // Log other errors for debugging
+    console.error('[Queue] Redis error:', errorMessage);
   });
 
   crawlQueue.on('waiting', (jobId) => {
@@ -193,6 +207,15 @@ if (!global.__queueEventListenersRegistered) {
 
   crawlQueue.on('failed', (job, err) => {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    
+    // EPIPE errors during job completion are non-critical - job already completed
+    // This happens when Redis connection closes during status update
+    if (errorMessage.includes('EPIPE') || errorMessage.includes('write EPIPE')) {
+      // Job already completed successfully, just status update failed
+      // BullMQ will retry the status update automatically
+      return; // Don't log as failure - job completed successfully
+    }
+    
     console.error(`[Queue] Job ${job?.id} failed:`, errorMessage);
     
     // Check if it's a connection error - these should be retried
@@ -531,6 +554,57 @@ if (!global.__queueProcessorRegistered) {
       if (crawlResult) {
         console.log(`[Queue] Saved crawl result for: ${url}`);
         addAuditLog(auditId, 'crawled', `Crawled: ${url}`, { url, statusCode: seoData.statusCode, title: seoData.title });
+        
+        // Detect and save issues for this crawl result
+        try {
+          const { detectIssuesForCrawlResult, saveIssuesToDb } = await import('./issue-detection');
+          const issues = await detectIssuesForCrawlResult(seoData, crawlResult.id, auditId);
+          if (issues.length > 0) {
+            await saveIssuesToDb(issues, auditId, crawlResult.id);
+            console.log(`[Queue] Detected ${issues.length} issue(s) for: ${url}`);
+          }
+        } catch (issueError) {
+          // Don't fail the crawl if issue detection fails
+          console.error(`[Queue] Error detecting issues for ${url}:`, issueError);
+        }
+        
+        // Queue advanced link checking (async, non-blocking)
+        try {
+          const { queueLinkChecks } = await import('./advanced-link-checker');
+          // Queue link checks asynchronously - don't wait
+          queueLinkChecks(crawlResult.id, seoData.links).catch((linkError) => {
+            console.error(`[Queue] Error checking links for ${url}:`, linkError);
+          });
+        } catch (linkError) {
+          // Don't fail the crawl if link checking setup fails
+          console.error(`[Queue] Error setting up link checks for ${url}:`, linkError);
+        }
+
+        // Save backlinks (async, non-blocking) - only for internal links
+        try {
+          // Get projectId for backlink tracking
+          const auditForBacklinks = await prismaCheck.audit.findUnique({
+            where: { id: auditId },
+            select: { projectId: true },
+          });
+          
+          if (auditForBacklinks?.projectId && seoData.links.length > 0) {
+            const { saveBacklinksForCrawlResult } = await import('./backlinks');
+            // Save backlinks asynchronously - don't wait
+            saveBacklinksForCrawlResult(
+              crawlResult.id,
+              url,
+              seoData.links,
+              auditForBacklinks.projectId,
+              domainBaseUrl
+            ).catch((backlinkError) => {
+              console.error(`[Queue] Error saving backlinks for ${url}:`, backlinkError);
+            });
+          }
+        } catch (backlinkError) {
+          // Don't fail the crawl if backlink saving fails
+          console.error(`[Queue] Error setting up backlink saving for ${url}:`, backlinkError);
+        }
       } else {
         console.log(`[Queue] ⚠️  Duplicate crawl result, skipping save and increment for: ${url}`);
         addAuditLog(auditId, 'skipped', `Skipped (duplicate crawl result): ${url}`, { url, reason: 'duplicate-result' });

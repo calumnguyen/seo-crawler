@@ -14,7 +14,7 @@ export async function GET() {
         },
       },
       include: {
-        project: {
+        Project: {
           select: {
             id: true,
             name: true,
@@ -27,18 +27,22 @@ export async function GET() {
       },
     });
 
-    // Calculate actual pagesCrawled from database count for each audit
-    const activeAuditsWithActualCounts = await Promise.all(
-      activeAudits.map(async (audit) => {
-        const actualPagesCrawled = await prisma.crawlResult.count({
-          where: { auditId: audit.id },
-        });
-        return {
-          ...audit,
-          pagesCrawled: actualPagesCrawled,
-        };
-      })
-    );
+    // REVERTED: Use simple approach - skip count queries if no audits (groupBy was causing timeouts)
+    // When database is empty or has connection issues, groupBy can timeout
+    const activeAuditsWithActualCounts = activeAudits.length > 0
+      ? await Promise.all(
+          activeAudits.map(async (audit) => {
+            const pagesCrawled = await prisma.crawlResult.count({
+              where: { auditId: audit.id },
+            });
+            return {
+              ...audit,
+              pagesCrawled,
+              project: audit.Project, // Map Project to project for backward compatibility
+            };
+          })
+        )
+      : [];
 
     // Get recent crawl results (last 50)
     const recentCrawls = await prisma.crawlResult.findMany({
@@ -47,9 +51,9 @@ export async function GET() {
         crawledAt: 'desc',
       },
       include: {
-        audit: {
+        Audit: {
           include: {
-            project: {
+            Project: {
               select: {
                 name: true,
                 domain: true,
@@ -65,9 +69,43 @@ export async function GET() {
       recentCrawls,
     });
   } catch (error) {
+    // Check if it's a database connection timeout
+    // Handle ErrorEvent with AggregateError (Neon WebSocket errors)
+    const errorObj = error as any;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    
+    // Check for ETIMEDOUT in various error structures
+    const nestedError = errorObj?.Symbol?.(Symbol.for('kError')) || errorObj?.Symbol?.kError || errorObj?.error;
+    const errorCode = errorObj?.code || nestedError?.code || (nestedError as any)?.code;
+    const isTimeout = errorMessage.includes('ETIMEDOUT') || 
+                      errorMessage.includes('timeout') ||
+                      errorMessage.includes('ErrorEvent') ||
+                      errorCode === 'ETIMEDOUT';
+    
+    if (isTimeout) {
+      // Log at warn level - these are transient and expected occasionally
+      console.warn('[Activity] Database connection timeout (transient)');
+      // Return valid response structure so frontend doesn't crash
+      return NextResponse.json(
+        { 
+          error: 'Database connection timeout',
+          message: 'The database connection timed out. Please try again in a moment.',
+          retryable: true,
+          activeAudits: [],
+          recentCrawls: [],
+        },
+        { status: 503 } // Service Unavailable - indicates temporary issue
+      );
+    }
+    
     console.error('Error fetching activity:', error);
+    // Return valid response structure even on error
     return NextResponse.json(
-      { error: 'Failed to fetch activity' },
+      { 
+        error: 'Failed to fetch activity',
+        activeAudits: [],
+        recentCrawls: [],
+      },
       { status: 500 }
     );
   }

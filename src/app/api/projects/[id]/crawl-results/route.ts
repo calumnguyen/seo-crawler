@@ -14,7 +14,7 @@ export async function GET(
     // Get all crawl results for audits belonging to this project
     const crawlResults = await prisma.crawlResult.findMany({
       where: {
-        audit: {
+        Audit: {
           projectId: id,
         },
       },
@@ -49,4 +49,5 @@ export async function GET(
     );
   }
 }
+
 

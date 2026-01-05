@@ -26,7 +26,7 @@ export async function POST(
     // Update audit status to in_progress if it's pending
     const audit = await prisma.audit.findUnique({
       where: { id: auditId },
-      include: { project: true },
+      include: { Project: true },
     });
 
     if (!audit) {
@@ -57,8 +57,10 @@ export async function POST(
         where: { domain },
         update: {},
         create: {
+          id: crypto.randomUUID(),
           domain,
           baseUrl: `${urlObj.protocol}//${urlObj.host}`,
+          updatedAt: new Date(),
         },
       });
       domainId = domainRecord.id;

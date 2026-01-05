@@ -43,7 +43,7 @@ export async function DELETE(
     const project = await prisma.project.findUnique({
       where: { id },
       include: {
-        audits: true,
+        Audit: true,
       },
     });
 

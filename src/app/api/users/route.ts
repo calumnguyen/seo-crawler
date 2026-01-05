@@ -60,8 +60,10 @@ export async function POST(request: NextRequest) {
     // Create new user
     const user = await prisma.user.create({
       data: {
+        id: crypto.randomUUID(),
         name,
         email,
+        updatedAt: new Date(),
       },
     });
 
@@ -74,4 +76,5 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
 

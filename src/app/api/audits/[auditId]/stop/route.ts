@@ -48,6 +48,16 @@ export async function POST(
       },
     });
 
+    // Delete all audit logs to save space
+    try {
+      const { clearAuditLogs } = await import('@/lib/audit-logs');
+      await clearAuditLogs(auditId);
+      console.log(`[Stop] Deleted audit logs for audit ${auditId} to save space`);
+    } catch (error) {
+      console.error(`[Stop] Error deleting audit logs for audit ${auditId}:`, error);
+      // Don't fail the request if log deletion fails
+    }
+
     console.log(`[Stop] ⚠️  Audit ${auditId} marked as stopped immediately. Active jobs will abort on next status check.`);
 
     // Return immediately - process job removal asynchronously to avoid blocking

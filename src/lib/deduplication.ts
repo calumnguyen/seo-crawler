@@ -168,14 +168,14 @@ export async function isUrlCrawledInProject(
         crawledAt: {
           gte: fourteenDaysAgo, // Crawled within 14 days
         },
-        audit: {
+        Audit: {
           projectId: projectId,
         },
       },
       select: {
         id: true,
         crawledAt: true,
-        audit: {
+        Audit: {
           select: {
             id: true,
             projectId: true,

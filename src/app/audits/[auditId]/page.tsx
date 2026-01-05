@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import TetrisLoading from '@/components/ui/tetris-loader';
 
 interface Audit {
@@ -16,7 +16,7 @@ interface Audit {
   technicalScore: number | null;
   contentScore: number | null;
   performanceScore: number | null;
-  project: {
+  Project: {
     id: string;
     name: string;
     baseUrl: string;
@@ -40,6 +40,7 @@ interface CrawlResult {
 
 export default function AuditDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const auditId = params.auditId as string;
   
   const [audit, setAudit] = useState<Audit | null>(null);
@@ -426,11 +427,11 @@ export default function AuditDetailPage() {
               Crawl Attempt Details
             </h1>
             <p className="text-lg text-zinc-600 dark:text-zinc-400">
-              {audit.project.name} • {audit.project.baseUrl}
+              {audit.Project.name} • {audit.Project.baseUrl}
             </p>
           </div>
           <Link
-            href={`/projects/${audit.project.id}`}
+            href={`/projects/${audit.Project.id}`}
             className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
           >
             ← Back to Project
@@ -676,9 +677,9 @@ export default function AuditDetailPage() {
                 </button>
                 <button
                   onClick={async () => {
-                    if (!confirm(`Delete project "${audit.project?.name || 'this project'}"? This will permanently delete the project and all its audits. This action cannot be undone.`)) return;
+                    if (!confirm(`Delete project "${audit.Project?.name || 'this project'}"? This will permanently delete the project and all its audits. This action cannot be undone.`)) return;
                     try {
-                      const projectId = audit.project?.id;
+                      const projectId = audit.Project?.id;
                       if (!projectId) {
                         alert('Project ID not found');
                         return;
@@ -1140,10 +1141,10 @@ export default function AuditDetailPage() {
             <>
               <div className="space-y-2">
                 {crawlResults.map((page) => (
-                  <Link
+                  <div
                     key={page.id}
-                    href={`/crawls/${page.id}`}
-                    className="block rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
+                    onClick={() => router.push(`/crawls/${page.id}`)}
+                    className="block cursor-pointer rounded-lg border border-zinc-200 bg-white p-4 shadow-sm transition-colors hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1 min-w-0">
@@ -1164,7 +1165,7 @@ export default function AuditDetailPage() {
                       </div>
                       <div className="ml-4 text-zinc-400">→</div>
                     </div>
-                  </Link>
+                  </div>
                 ))}
               </div>
               {crawlResultsPagination && crawlResultsPagination.totalPages > 1 && (

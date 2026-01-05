@@ -24,6 +24,7 @@ export function addAuditLog(
   // Fire and forget - save to database asynchronously without blocking
   prisma.auditLog.create({
     data: {
+      id: crypto.randomUUID(),
       auditId,
       category,
       message,

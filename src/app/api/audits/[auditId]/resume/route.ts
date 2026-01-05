@@ -16,7 +16,7 @@ export async function POST(
     // Get audit and project
     const audit = await prisma.audit.findUnique({
       where: { id: auditId },
-      include: { project: true },
+      include: { Project: true },
     });
 
     if (!audit) {

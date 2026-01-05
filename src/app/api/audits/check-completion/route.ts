@@ -43,14 +43,37 @@ export async function POST() {
           completedAt: new Date(),
         },
       });
+      
+      // Delete all audit logs to save space
+      try {
+        const { clearAuditLogs } = await import('@/lib/audit-logs');
+        await clearAuditLogs(audit.id);
+        console.log(`[Check-Completion] Deleted audit logs for audit ${audit.id} to save space`);
+      } catch (error) {
+        console.error(`[Check-Completion] Error deleting audit logs for audit ${audit.id}:`, error);
+        // Don't fail if log deletion fails
+      }
+      
       const auditWithPausedAt = audit as { pausedAt?: Date | null };
       const pauseTime = auditWithPausedAt.pausedAt || audit.startedAt;
       const daysPaused = pauseTime ? Math.floor((Date.now() - pauseTime.getTime()) / (1000 * 60 * 60 * 24)) : 0;
       console.log(`[Check-Completion] Auto-stopped paused audit ${audit.id} (paused for ${daysPaused} days - over 14 day limit)`);
     }
   } catch (error) {
-    // Ignore errors - pausedAt field might not exist yet
-    console.error('Error auto-stopping paused audits:', error);
+    // Check if it's a database connection timeout
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isTimeout = errorMessage.includes('ETIMEDOUT') || 
+                      errorMessage.includes('timeout') ||
+                      (error as any)?.code === 'ETIMEDOUT';
+    
+    if (isTimeout) {
+      // Log timeout errors at a lower level - these are usually transient
+      console.warn('[Check-Completion] Database connection timeout while auto-stopping paused audits (transient):', errorMessage);
+    } else {
+      // Log other errors normally - pausedAt field might not exist yet
+      console.error('Error auto-stopping paused audits:', error);
+    }
+    // Continue execution - this is a background cleanup operation
   }
   try {
     // Get all in_progress audits
@@ -151,6 +174,17 @@ export async function POST() {
               pagesTotal: Math.max(audit.pagesTotal || 0, pagesCrawled),
             },
           });
+          
+          // Delete all audit logs to save space
+          try {
+            const { clearAuditLogs } = await import('@/lib/audit-logs');
+            await clearAuditLogs(audit.id);
+            console.log(`[Check-Completion] Deleted audit logs for audit ${audit.id} to save space`);
+          } catch (error) {
+            console.error(`[Check-Completion] Error deleting audit logs for audit ${audit.id}:`, error);
+            // Don't fail if log deletion fails
+          }
+          
           completed.push(audit.id);
           console.log(`[Check-Completion] Marked audit ${audit.id} as completed: ${pagesCrawled} pages crawled`);
         } else {

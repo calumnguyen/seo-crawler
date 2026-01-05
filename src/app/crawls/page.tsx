@@ -16,8 +16,8 @@ interface CrawlResult {
   imagesCount: number;
   internalLinksCount: number;
   externalLinksCount: number;
-  audit: {
-    project: {
+  Audit: {
+    Project: {
       id: string;
       name: string;
       domain: string;
@@ -123,7 +123,7 @@ export default function CrawlsPage() {
                       </div>
                     </div>
                     <div className="ml-4 text-sm text-zinc-500 dark:text-zinc-400">
-                      {result.audit.project.name}
+                      {result.Audit?.Project?.name || 'Unknown Project'}
                     </div>
                   </div>
                 </Link>

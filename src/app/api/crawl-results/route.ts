@@ -40,9 +40,9 @@ export async function GET(request: NextRequest) {
           imagesCount: true,
           internalLinksCount: true,
           externalLinksCount: true,
-          audit: {
+          Audit: {
             include: {
-              project: {
+              Project: {
                 select: {
                   id: true,
                   name: true,

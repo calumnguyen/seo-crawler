@@ -11,8 +11,8 @@ export async function GET() {
       include: {
         _count: {
           select: {
-            audits: true,
-            backlinks: true,
+            Audit: true,
+            Backlink: true,
           },
         },
       },
@@ -73,9 +73,11 @@ export async function POST(request: NextRequest) {
       // Create new project
       project = await prisma.project.create({
         data: {
+          id: crypto.randomUUID(),
           name,
           baseUrl,
           domain,
+          updatedAt: new Date(),
         },
       });
     }
@@ -83,6 +85,7 @@ export async function POST(request: NextRequest) {
     // Create initial audit for this project
     const audit = await prisma.audit.create({
       data: {
+        id: crypto.randomUUID(),
         projectId: project.id,
         status: 'pending',
         pagesTotal: 0,

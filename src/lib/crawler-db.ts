@@ -7,8 +7,10 @@ export async function saveCrawlResultToDb(
   domainId?: string
 ) {
   // Save main crawl result
+  // Note: Some fields require Prisma client regeneration after migration
   const crawlResult = await prisma.crawlResult.create({
     data: {
+      id: crypto.randomUUID(),
       auditId,
       domainId,
       url: seoData.url,
@@ -19,8 +21,33 @@ export async function saveCrawlResultToDb(
       canonicalUrl: seoData.canonicalUrl,
       language: seoData.language,
       responseTimeMs: seoData.responseTime,
-      contentLength: null, // Can be added later
+      contentLength: seoData.contentLength || null,
       crawledAt: seoData.crawledAt,
+      // Redirect tracking
+      redirectChain: seoData.redirectChain && seoData.redirectChain.length > 0 
+        ? seoData.redirectChain 
+        : undefined,
+      redirectCount: seoData.redirectCount || 0,
+      finalUrl: seoData.finalUrl || null,
+      // HTTP metadata
+      lastModified: seoData.lastModified 
+        ? new Date(seoData.lastModified) 
+        : null,
+      etag: seoData.etag || null,
+      // Meta robots tag (requires migration)
+      // metaRobots: seoData.metaRobots || null,
+      // Structured data
+      structuredData: seoData.structuredData && seoData.structuredData.length > 0
+        ? seoData.structuredData
+        : undefined,
+      // HTTP headers (requires migration)
+      // httpHeaders: seoData.headers && Object.keys(seoData.headers).length > 0
+      //   ? seoData.headers
+      //   : undefined,
+      // Content metrics (requires migration)
+      // wordCount: seoData.wordCount || null,
+      // contentQualityScore: seoData.contentQualityScore !== undefined ? seoData.contentQualityScore : null,
+      // contentDepthScore: seoData.contentDepthScore !== undefined ? seoData.contentDepthScore : null,
       h1Count: seoData.h1.length,
       h2Count: seoData.h2.length,
       h3Count: seoData.h3.length,
@@ -30,19 +57,22 @@ export async function saveCrawlResultToDb(
       externalLinksCount: seoData.links.filter((link) => link.isExternal).length,
       completenessScore: calculateCompletenessScore(seoData),
       // Save headings
-      headings: {
+      Heading: {
         create: [
           ...seoData.h1.map((text, index) => ({
+            id: crypto.randomUUID(),
             level: 1,
             text,
             order: index,
           })),
           ...seoData.h2.map((text, index) => ({
+            id: crypto.randomUUID(),
             level: 2,
             text,
             order: index,
           })),
           ...seoData.h3.map((text, index) => ({
+            id: crypto.randomUUID(),
             level: 3,
             text,
             order: index,
@@ -50,17 +80,21 @@ export async function saveCrawlResultToDb(
         ],
       },
       // Save images
-      images: {
+      Image: {
         create: seoData.images.map((img, index) => ({
+          id: crypto.randomUUID(),
           src: img.src,
           alt: img.alt,
           title: img.title,
+          width: img.width || null,
+          height: img.height || null,
           order: index,
         })),
       },
       // Save links
-      links: {
+      Link: {
         create: seoData.links.map((link, index) => ({
+          id: crypto.randomUUID(),
           href: link.href,
           text: link.text,
           isExternal: link.isExternal,
@@ -75,8 +109,9 @@ export async function saveCrawlResultToDb(
       seoData.ogTags.type ||
       seoData.ogTags.url
         ? {
-            ogTags: {
+            OgTag: {
               create: {
+                id: crypto.randomUUID(),
                 title: seoData.ogTags.title,
                 description: seoData.ogTags.description,
                 image: seoData.ogTags.image,
@@ -88,10 +123,10 @@ export async function saveCrawlResultToDb(
         : {}),
     },
     include: {
-      headings: true,
-      images: true,
-      links: true,
-      ogTags: true,
+      Heading: true,
+      Image: true,
+      Link: true,
+      OgTag: true,
     },
   });
 
@@ -100,33 +135,31 @@ export async function saveCrawlResultToDb(
 
 function calculateCompletenessScore(seoData: SEOData): number {
   let score = 0;
-  let total = 0;
+  const maxScore = 100;
 
-  // Title (required)
-  total += 1;
-  if (seoData.title) score += 1;
-
-  // Meta description (important)
-  total += 1;
-  if (seoData.metaDescription) score += 1;
-
-  // H1 (important)
-  total += 1;
-  if (seoData.h1.length > 0) score += 1;
-
-  // Canonical URL (optional but good)
-  total += 0.5;
-  if (seoData.canonicalUrl) score += 0.5;
-
-  // Images with alt text
-  total += 1;
-  const imagesWithAlt = seoData.images.filter((img) => img.alt).length;
-  if (seoData.images.length > 0) {
-    score += imagesWithAlt / seoData.images.length;
-  } else {
-    score += 1; // No images is fine
+  // Title (20 points)
+  if (seoData.title && seoData.title.length > 0) {
+    score += 20;
   }
 
-  return score / total;
-}
+  // Meta description (20 points)
+  if (seoData.metaDescription && seoData.metaDescription.length > 0) {
+    score += 20;
+  }
 
+  // Headings (20 points)
+  if (seoData.h1.length > 0) score += 10;
+  if (seoData.h2.length > 0) score += 5;
+  if (seoData.h3.length > 0) score += 5;
+
+  // Images with alt text (20 points)
+  const imagesWithAlt = seoData.images.filter((img) => img.alt).length;
+  if (imagesWithAlt > 0) {
+    score += Math.min(20, (imagesWithAlt / seoData.images.length) * 20);
+  }
+
+  // Links (20 points)
+  if (seoData.links.length > 0) score += 20;
+
+  return Math.min(maxScore, score);
+}

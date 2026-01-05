@@ -23,7 +23,7 @@ export async function startAutomaticCrawl(
   // Get audit and project info
   const audit = await prisma.audit.findUnique({
     where: { id: auditId },
-    include: { project: true },
+    include: { Project: true },
   });
 
   if (!audit) {
@@ -72,8 +72,8 @@ export async function startAutomaticCrawl(
     }
   }
 
-  const baseUrl = audit.project.baseUrl;
-  const projectDomain = audit.project.domain;
+  const baseUrl = audit.Project.baseUrl;
+  const projectDomain = audit.Project.domain;
 
   // STEP 0: Check for previous crawl attempts in this project within 14 days
   // Get URLs that were already crawled to skip them
@@ -138,8 +138,10 @@ export async function startAutomaticCrawl(
       where: { domain },
       update: {},
       create: {
+        id: crypto.randomUUID(),
         domain,
         baseUrl: `${urlObj.protocol}//${urlObj.host}`,
+        updatedAt: new Date(),
       },
     });
     domainId = domainRecord.id;

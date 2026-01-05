@@ -14,7 +14,7 @@ export async function GET(
     const audit = await prisma.audit.findUnique({
       where: { id: auditId },
       include: {
-        project: {
+        Project: {
           select: {
             id: true,
             name: true,

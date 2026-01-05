@@ -18,8 +18,8 @@ export async function GET(
     const audit = await prisma.audit.findUnique({
       where: { id: auditId },
       include: {
-        project: true,
-        crawlResults: {
+        Project: true,
+        CrawlResult: {
           take: 5,
           orderBy: { crawledAt: 'desc' },
         },
@@ -88,11 +88,11 @@ export async function GET(
         startedAt: audit.startedAt,
         completedAt: audit.completedAt,
         project: {
-          id: audit.project.id,
-          domain: audit.project.domain,
-          baseUrl: audit.project.baseUrl,
+          id: audit.Project.id,
+          domain: audit.Project.domain,
+          baseUrl: audit.Project.baseUrl,
         },
-        crawlResultsCount: audit.crawlResults.length,
+        crawlResultsCount: audit.CrawlResult.length,
       },
       queue: {
         ready: queueReady,
@@ -109,7 +109,7 @@ export async function GET(
       },
       diagnostics: {
         hasPagesTotal: audit.pagesTotal !== null && audit.pagesTotal > 0,
-        hasCrawlResults: audit.crawlResults.length > 0,
+        hasCrawlResults: audit.CrawlResult.length > 0,
         hasJobsInQueue: auditJobs.length > 0,
         queueProcessorRunning: queueReady,
       },

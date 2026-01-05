@@ -46,6 +46,17 @@ export async function POST() {
           pagesCrawled: actualPagesCrawled, // Update to actual count from database
         },
       });
+      
+      // Delete all audit logs to save space
+      try {
+        const { clearAuditLogs } = await import('@/lib/audit-logs');
+        await clearAuditLogs(audit.id);
+        console.log(`[Auto-Stop] Deleted audit logs for audit ${audit.id} to save space`);
+      } catch (error) {
+        console.error(`[Auto-Stop] Error deleting audit logs for audit ${audit.id}:`, error);
+        // Don't fail if log deletion fails
+      }
+      
       stopped.push(audit.id);
       const auditWithPausedAt = audit as { pausedAt?: Date | null };
       const pauseTime = auditWithPausedAt.pausedAt || audit.startedAt;
@@ -59,6 +70,24 @@ export async function POST() {
       auditIds: stopped,
     });
   } catch (error) {
+    // Check if it's a database connection timeout
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isTimeout = errorMessage.includes('ETIMEDOUT') || 
+                      errorMessage.includes('timeout') ||
+                      (error as any)?.code === 'ETIMEDOUT';
+    
+    if (isTimeout) {
+      console.error('[Auto-Stop-Paused] Database connection timeout - this is usually transient:', errorMessage);
+      return NextResponse.json(
+        { 
+          error: 'Database connection timeout',
+          message: 'The database connection timed out. Please try again in a moment.',
+          retryable: true 
+        },
+        { status: 503 } // Service Unavailable - indicates temporary issue
+      );
+    }
+    
     console.error('Error auto-stopping paused audits:', error);
     return NextResponse.json(
       { error: 'Failed to auto-stop paused audits' },

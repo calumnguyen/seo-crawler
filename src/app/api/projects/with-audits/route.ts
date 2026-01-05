@@ -8,7 +8,7 @@ export async function GET() {
   try {
     const projects = await prisma.project.findMany({
       include: {
-        audits: {
+        Audit: {
           orderBy: {
             startedAt: 'desc',
           },
@@ -24,8 +24,8 @@ export async function GET() {
         },
         _count: {
           select: {
-            audits: true,
-            backlinks: true,
+            Audit: true,
+            Backlink: true,
           },
         },
       },
@@ -37,7 +37,7 @@ export async function GET() {
     // Optimize: Get all crawl result counts in a single query using groupBy
     // Collect all audit IDs from all projects
     const allAuditIds = projects.flatMap(project => 
-      project.audits.map(audit => audit.id)
+      project.Audit.map(audit => audit.id)
     );
 
     // Single query to get all counts
@@ -59,7 +59,7 @@ export async function GET() {
     // Merge counts with audits for each project
     const projectsWithActualCounts = projects.map((project) => ({
       ...project,
-      audits: project.audits.map((audit) => ({
+      audits: project.Audit.map((audit) => ({
         ...audit,
         pagesCrawled: countMap.get(audit.id) || 0,
       })),

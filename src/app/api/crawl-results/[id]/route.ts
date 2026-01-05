@@ -14,9 +14,9 @@ export async function GET(
     const crawlResult = await prisma.crawlResult.findUnique({
       where: { id },
       include: {
-        audit: {
+        Audit: {
           include: {
-            project: {
+            Project: {
               select: {
                 id: true,
                 name: true,
@@ -26,23 +26,30 @@ export async function GET(
             },
           },
         },
-        headings: {
+        Heading: {
           orderBy: [
             { level: 'asc' },
             { order: 'asc' },
           ],
         },
-        images: {
+        Image: {
           orderBy: {
             order: 'asc',
           },
         },
-        links: {
+        Link: {
           orderBy: {
             order: 'asc',
           },
         },
-        ogTags: true,
+        OgTag: true,
+        Issue: {
+          orderBy: [
+            { severity: 'asc' }, // error, warning, info
+            { category: 'asc' },
+            { type: 'asc' },
+          ],
+        },
       },
     });
 
@@ -62,4 +69,5 @@ export async function GET(
     );
   }
 }
+
 
