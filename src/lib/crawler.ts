@@ -4,6 +4,7 @@ import type { SEOData, ImageData, LinkData, OGTags, PerformanceMetrics, MobileMe
 import { fetchWithProxy } from './proxy-fetch';
 import { getProxyManager } from './proxy-manager';
 import { getBrowserHeaders } from './browser-headers';
+import { isHoneypotLink } from './honeypot-detector';
 
 const MAX_REDIRECTS = 10;
 
@@ -726,11 +727,17 @@ export async function crawlUrl(url: string, auditId?: string): Promise<SEOData> 
       .get()
       .filter((img) => img.src.length > 0);
 
-    // Extract links
+    // Extract links (filtering out honeypots)
     const baseUrl = new URL(finalUrl || url);
     const links: LinkData[] = $('a[href]')
       .map((_, el) => {
         const $link = $(el);
+        
+        // Skip honeypot links (hidden links designed to trap crawlers)
+        if (isHoneypotLink($link, $)) {
+          return null;
+        }
+        
         const href = $link.attr('href') || '';
         let fullUrl: string;
         try {
