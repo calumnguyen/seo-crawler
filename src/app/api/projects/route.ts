@@ -56,31 +56,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check if project with this name already exists
+    const existingByName = await prisma.project.findFirst({
+      where: { name },
+    });
+
+    if (existingByName) {
+      return NextResponse.json(
+        { error: `A project with the name "${name}" already exists` },
+        { status: 409 }
+      );
+    }
+
     // Check if project with this domain already exists
-    let project = await prisma.project.findUnique({
+    const existingByDomain = await prisma.project.findUnique({
       where: { domain },
     });
 
-    if (project) {
-      // Project exists, update name if different and create new audit
-      if (project.name !== name) {
-        project = await prisma.project.update({
-          where: { id: project.id },
-          data: { name },
-        });
-      }
-    } else {
-      // Create new project
-      project = await prisma.project.create({
-        data: {
-          id: crypto.randomUUID(),
-          name,
-          baseUrl,
-          domain,
-          updatedAt: new Date(),
-        },
-      });
+    if (existingByDomain) {
+      return NextResponse.json(
+        { error: `A project with the domain "${domain}" already exists` },
+        { status: 409 }
+      );
     }
+
+    // Create new project
+    const project = await prisma.project.create({
+      data: {
+        id: crypto.randomUUID(),
+        name,
+        baseUrl,
+        domain,
+        updatedAt: new Date(),
+      },
+    });
 
     // Create initial audit for this project
     const audit = await prisma.audit.create({

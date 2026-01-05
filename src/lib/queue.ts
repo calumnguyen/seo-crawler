@@ -534,7 +534,8 @@ if (!global.__queueProcessorRegistered) {
       
       // Crawl the URL (pass auditId for proxy logging)
       console.log(`[Queue] Crawling: ${url}`);
-      const seoData = await crawlUrl(url, auditId);
+      const isBacklinkDiscovery = job.data.metadata?.backlinkDiscovery || false;
+      const seoData = await crawlUrl(url, auditId, isBacklinkDiscovery);
       
       // CRITICAL: Re-check audit status after crawling (stop might have been clicked during crawl)
       const postCrawlAuditCheck = await prismaCheck.audit.findUnique({

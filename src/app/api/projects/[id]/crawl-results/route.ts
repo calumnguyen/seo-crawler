@@ -11,8 +11,30 @@ export async function GET(
   try {
     const { id } = await params;
 
+    // Get the project to find the domain/baseUrl
+    const project = await prisma.project.findUnique({
+      where: { id },
+      select: { domain: true, baseUrl: true },
+    });
+
+    if (!project) {
+      return NextResponse.json(
+        { error: 'Project not found' },
+        { status: 404 }
+      );
+    }
+
+    // Extract domain from baseUrl for comparison
+    let projectDomain: string;
+    try {
+      const baseUrlObj = new URL(project.baseUrl);
+      projectDomain = baseUrlObj.hostname.replace(/^www\./, '').toLowerCase();
+    } catch {
+      projectDomain = project.domain.toLowerCase();
+    }
+
     // Get all crawl results for audits belonging to this project
-    const crawlResults = await prisma.crawlResult.findMany({
+    const allCrawlResults = await prisma.crawlResult.findMany({
       where: {
         Audit: {
           projectId: id,
@@ -38,6 +60,18 @@ export async function GET(
         completenessScore: true,
         auditId: true,
       },
+    });
+
+    // Filter to only include pages from the project's domain (exclude external backlink pages)
+    const crawlResults = allCrawlResults.filter((result) => {
+      try {
+        const urlObj = new URL(result.url);
+        const resultDomain = urlObj.hostname.replace(/^www\./, '').toLowerCase();
+        return resultDomain === projectDomain;
+      } catch {
+        // If URL parsing fails, exclude it to be safe
+        return false;
+      }
     });
 
     return NextResponse.json(crawlResults);

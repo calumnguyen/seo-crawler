@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import TetrisLoading from '@/components/ui/tetris-loader';
+import CrawlGraph from '@/components/CrawlGraph';
 
 interface Project {
   id: string;
@@ -54,9 +55,14 @@ export default function ProjectDetailPage() {
   const [audits, setAudits] = useState<Audit[]>([]);
   const [crawlResults, setCrawlResults] = useState<CrawlResult[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'audits' | 'pages'>('audits');
+  const [activeTab, setActiveTab] = useState<'audits' | 'pages' | 'graph'>('audits');
   const [auditFilter, setAuditFilter] = useState<'all' | 'completed' | 'in_progress' | 'pending' | 'pending_approval'>('all');
   const [pageFilter, setPageFilter] = useState<'all' | 'recent'>('recent');
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerTitle, setViewerTitle] = useState('');
+  const [viewerContent, setViewerContent] = useState('');
+  const [robotsAvailable, setRobotsAvailable] = useState(false);
+  const [sitemaps, setSitemaps] = useState<Array<{ url: string; content: string }>>([]);
 
   useEffect(() => {
     fetchProjectData();
@@ -66,10 +72,12 @@ export default function ProjectDetailPage() {
 
   const fetchProjectData = async () => {
     try {
-      const [projectRes, auditsRes, pagesRes] = await Promise.all([
+      const [projectRes, auditsRes, pagesRes, robotsRes, sitemapsRes] = await Promise.all([
         fetch(`/api/projects/${projectId}`),
         fetch(`/api/projects/${projectId}/audits`),
         fetch(`/api/projects/${projectId}/crawl-results`),
+        fetch(`/api/projects/${projectId}/robots`).catch(() => ({ ok: false })),
+        fetch(`/api/projects/${projectId}/sitemaps`).catch(() => ({ ok: false })),
       ]);
 
       if (projectRes.ok) {
@@ -86,12 +94,113 @@ export default function ProjectDetailPage() {
         const pagesData = await pagesRes.json();
         setCrawlResults(pagesData);
       }
+
+      if (robotsRes.ok) {
+        setRobotsAvailable(true);
+      } else {
+        setRobotsAvailable(false);
+      }
+
+      if (sitemapsRes.ok) {
+        const sitemapsData = await sitemapsRes.json();
+        setSitemaps(Array.isArray(sitemapsData) ? sitemapsData : []);
+      } else {
+        setSitemaps([]);
+      }
     } catch (error) {
       console.error('Error fetching project data:', error);
     } finally {
       setLoading(false);
     }
   };
+
+  // Helper function to highlight XML syntax
+  const highlightXml = (xml: string): string => {
+    // Escape HTML first (do this carefully to avoid double-escaping)
+    let result = xml
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    
+    // XML Declaration
+    result = result.replace(/(&lt;\?xml[^?]*\?&gt;)/g, '<span class="text-purple-600 dark:text-purple-400">$1</span>');
+    
+    // Comments (match before tags to avoid conflicts)
+    result = result.replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="text-green-600 dark:text-green-400">$1</span>');
+    
+    // CDATA sections
+    result = result.replace(/(&lt;!\[CDATA\[[\s\S]*?\]\]&gt;)/g, '<span class="text-orange-600 dark:text-orange-400">$1</span>');
+    
+    // Opening tags with attributes (including self-closing)
+    result = result.replace(/(&lt;)([\w-:]+)((?:\s+[\w-:]+="[^"]*")*)(\s*\/?&gt;)/g, (match, open, tag, attrs, close) => {
+      const attrsHighlighted = attrs.replace(/([\w-:]+)="([^"]*)"/g, '<span class="text-blue-600 dark:text-blue-400">$1</span>=<span class="text-orange-600 dark:text-orange-400">"$2"</span>');
+      return `<span class="text-red-600 dark:text-red-400">${open}</span><span class="text-blue-700 dark:text-blue-300 font-semibold">${tag}</span>${attrsHighlighted}<span class="text-red-600 dark:text-red-400">${close}</span>`;
+    });
+    
+    // Closing tags
+    result = result.replace(/(&lt;\/)([\w-:]+)(&gt;)/g, '<span class="text-red-600 dark:text-red-400">$1</span><span class="text-blue-700 dark:text-blue-300 font-semibold">$2</span><span class="text-red-600 dark:text-red-400">$3</span>');
+    
+    // URLs in text content (common in sitemaps)
+    result = result.replace(/(https?:\/\/[^\s&lt;&gt;"]+)/g, '<span class="text-blue-500 dark:text-blue-400 underline">$1</span>');
+    
+    return result;
+  };
+
+  // Helper function to highlight robots.txt syntax
+  const highlightRobots = (text: string): string => {
+    return text
+      // Escape HTML
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      // Comments
+      .replace(/(#.*$)/gm, '<span class="text-green-600 dark:text-green-400">$1</span>')
+      // User-agent
+      .replace(/(User-agent:.*$)/gmi, '<span class="text-blue-600 dark:text-blue-400 font-semibold">$1</span>')
+      // Allow/Disallow
+      .replace(/(Allow:|Disallow:)(.*$)/gmi, (match, directive, path) => {
+        const directiveClass = directive.toLowerCase() === 'allow:' 
+          ? 'text-green-600 dark:text-green-400' 
+          : 'text-red-600 dark:text-red-400';
+        return `<span class="${directiveClass} font-semibold">${directive}</span><span class="text-zinc-700 dark:text-zinc-300">${path}</span>`;
+      })
+      // Sitemap
+      .replace(/(Sitemap:)(.*$)/gmi, '<span class="text-purple-600 dark:text-purple-400 font-semibold">$1</span><span class="text-blue-500 dark:text-blue-400 underline">$2</span>')
+      // Crawl-delay
+      .replace(/(Crawl-delay:)(.*$)/gmi, '<span class="text-orange-600 dark:text-orange-400 font-semibold">$1</span><span class="text-zinc-700 dark:text-zinc-300">$2</span>');
+  };
+
+  const openViewer = async (type: 'robots' | 'sitemap', index?: number) => {
+    try {
+      if (type === 'robots') {
+        const res = await fetch(`/api/projects/${projectId}/robots`);
+        if (res.ok) {
+          const data = await res.json();
+          setViewerTitle('robots.txt');
+          setViewerContent(data.content || '');
+          setViewerOpen(true);
+        }
+      } else if (type === 'sitemap' && index !== undefined) {
+        const res = await fetch(`/api/projects/${projectId}/sitemaps/${index}`);
+        if (res.ok) {
+          const data = await res.json();
+          setViewerTitle(`Sitemap: ${data.url}`);
+          setViewerContent(data.content || '');
+          setViewerOpen(true);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching content:', error);
+      alert('Failed to load content');
+    }
+  };
+
+  // Compute highlighted content (only when viewerContent changes)
+  const highlightedContent = useMemo(() => {
+    if (!viewerContent) return '';
+    const isXml = viewerContent.trim().startsWith('<?xml') || viewerContent.trim().startsWith('<');
+    return isXml ? highlightXml(viewerContent) : highlightRobots(viewerContent);
+  }, [viewerContent]);
 
   const filteredAudits = audits.filter((audit) => {
     if (auditFilter === 'all') return true;
@@ -177,6 +286,64 @@ export default function ProjectDetailPage() {
           </div>
         </div>
 
+        {/* Configuration Files */}
+        <div className="mb-6 rounded-lg border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <h2 className="mb-4 text-xl font-semibold text-black dark:text-zinc-50">Configuration Files</h2>
+          <div className="grid gap-4 md:grid-cols-2">
+            {/* Robots.txt */}
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="font-medium text-black dark:text-zinc-50">robots.txt</h3>
+                {robotsAvailable ? (
+                  <span className="text-xs text-green-600 dark:text-green-400">Available</span>
+                ) : (
+                  <span className="text-xs text-zinc-400">Not found</span>
+                )}
+              </div>
+              {robotsAvailable ? (
+                <button
+                  onClick={() => openViewer('robots')}
+                  className="mt-2 w-full rounded bg-blue-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                >
+                  View robots.txt
+                </button>
+              ) : (
+                <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                  robots.txt has not been fetched yet. It will be available after the first crawl.
+                </p>
+              )}
+            </div>
+
+            {/* Sitemaps */}
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-800">
+              <div className="mb-2 flex items-center justify-between">
+                <h3 className="font-medium text-black dark:text-zinc-50">Sitemaps</h3>
+                <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                  {sitemaps.length} found
+                </span>
+              </div>
+              {sitemaps.length > 0 ? (
+                <div className="mt-2 space-y-2">
+                  {sitemaps.map((sitemap, index) => (
+                    <button
+                      key={index}
+                      onClick={() => openViewer('sitemap', index)}
+                      className="block w-full rounded border border-zinc-300 bg-white px-3 py-2 text-left text-sm text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                    >
+                      <div className="truncate font-medium">{sitemap.url}</div>
+                      <div className="text-xs text-zinc-500">Click to view</div>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                  No sitemaps found. They will be available after the first crawl.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
         {/* Tabs */}
         <div className="mb-4 border-b border-zinc-200 dark:border-zinc-700">
           <div className="flex gap-4">
@@ -199,6 +366,16 @@ export default function ProjectDetailPage() {
               }`}
             >
               All Pages ({crawlResults.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('graph')}
+              className={`border-b-2 px-4 py-2 font-medium transition-colors ${
+                activeTab === 'graph'
+                  ? 'border-blue-600 text-blue-600 dark:border-blue-400 dark:text-blue-400'
+                  : 'border-transparent text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-50'
+              }`}
+            >
+              Graph View
             </button>
           </div>
         </div>
@@ -481,7 +658,47 @@ export default function ProjectDetailPage() {
             )}
           </div>
         )}
+
+        {/* Graph Tab */}
+        {activeTab === 'graph' && (
+          <div>
+            <CrawlGraph projectId={projectId} />
+          </div>
+        )}
       </main>
+
+      {/* Content Viewer Modal */}
+      {viewerOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setViewerOpen(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-4xl rounded-lg bg-white shadow-xl dark:bg-zinc-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-200 px-6 py-4 dark:border-zinc-700">
+              <h3 className="text-lg font-semibold text-black dark:text-zinc-50">{viewerTitle}</h3>
+              <button
+                onClick={() => setViewerOpen(false)}
+                className="rounded p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-50"
+              >
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="max-h-[calc(90vh-80px)] overflow-auto p-6">
+              <pre className="whitespace-pre-wrap break-words rounded bg-zinc-50 p-4 text-sm dark:bg-zinc-950 font-mono">
+                <code 
+                  className="block"
+                  dangerouslySetInnerHTML={{ __html: highlightedContent }}
+                />
+              </pre>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

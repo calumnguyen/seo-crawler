@@ -13,7 +13,8 @@ async function fetchWithRedirectTracking(
   url: string,
   options: RequestInit = {},
   maxRedirects = MAX_REDIRECTS,
-  auditId?: string
+  auditId?: string,
+  isBacklinkDiscovery?: boolean
 ): Promise<{
   response: Response;
   finalUrl: string;
@@ -66,7 +67,8 @@ async function fetchWithRedirectTracking(
         // Success with direct connection - no proxy needed
         if (auditId) {
           const { addAuditLog } = await import('./audit-logs');
-          addAuditLog(auditId, 'crawled', `✅ Direct connection successful for ${new URL(currentUrl).pathname}`, {
+          const logCategory = isBacklinkDiscovery ? 'backlink-discovery' : 'crawled';
+          addAuditLog(auditId, logCategory, `✅ Direct connection successful for ${new URL(currentUrl).pathname}`, {
             url: currentUrl,
             proxy: null,
             method: 'direct',
@@ -91,7 +93,8 @@ async function fetchWithRedirectTracking(
           
           if (auditId) {
             const { addAuditLog } = await import('./audit-logs');
-            addAuditLog(auditId, 'crawled', `⏱️ Timeout/connection error, retrying with proxy: ${proxyInfo || 'none'}`, {
+            const logCategory = isBacklinkDiscovery ? 'backlink-discovery' : 'crawled';
+            addAuditLog(auditId, logCategory, `⏱️ Timeout/connection error, retrying with proxy: ${proxyInfo || 'none'}`, {
               url: currentUrl,
               proxy: proxyInfo,
               error: directError instanceof Error ? directError.message : String(directError),
@@ -143,7 +146,8 @@ async function fetchWithRedirectTracking(
         if (proxy) {
           if (auditId) {
             const { addAuditLog } = await import('./audit-logs');
-            addAuditLog(auditId, 'crawled', `🔄 Direct connection failed, trying proxy: ${proxy.host}:${proxy.port}`, {
+            const logCategory = isBacklinkDiscovery ? 'backlink-discovery' : 'crawled';
+            addAuditLog(auditId, logCategory, `🔄 Direct connection failed, trying proxy: ${proxy.host}:${proxy.port}`, {
               url: currentUrl,
               proxy: `${proxy.host}:${proxy.port}`,
               error: error instanceof Error ? error.message : String(error),
@@ -603,7 +607,7 @@ function calculatePerformanceMetrics(
   };
 }
 
-export async function crawlUrl(url: string, auditId?: string): Promise<SEOData> {
+export async function crawlUrl(url: string, auditId?: string, isBacklinkDiscovery?: boolean): Promise<SEOData> {
   const startTime = Date.now();
   
   try {
@@ -617,7 +621,8 @@ export async function crawlUrl(url: string, auditId?: string): Promise<SEOData> 
         headers: browserHeaders,
       },
       MAX_REDIRECTS,
-      auditId
+      auditId,
+      isBacklinkDiscovery
     );
 
     const statusCode = response.status;

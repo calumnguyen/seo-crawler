@@ -168,7 +168,9 @@ model Domain {
   domain        String          @unique
   baseUrl       String
   robotsTxtUrl  String?
+  robotsTxtContent String?      @db.Text
   sitemapUrl    String?
+  sitemaps      Json?           // Array of { url: string, content: string }
   crawlDelay    Int?
   isActive      Boolean         @default(true)
   createdAt     DateTime        @default(now())

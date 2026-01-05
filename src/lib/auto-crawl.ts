@@ -364,22 +364,24 @@ export async function startAutomaticCrawl(
 
           if (response.ok) {
             robotsTxtUrl = testUrl;
+            const robotsTxtContent = await response.text();
             robotsTxt = await getRobotsTxt(baseUrl);
             crawlDelay = robotsTxt ? robotsTxt.getCrawlDelay() || null : null;
             console.log(`[Auto-Crawl] ✅ robots.txt found at ${robotsTxtUrl}${proxyUsed ? ` (via proxy ${proxyUsed})` : ''}`);
             addAuditLog(auditId, 'setup', `✅ robots.txt fetched successfully: ${robotsTxtUrl}${proxyUsed ? ` (proxy: ${proxyUsed})` : ''}`, { url: robotsTxtUrl, success: true, proxy: proxyUsed });
             
-            // Update domain record with robots.txt URL and crawl delay
+            // Update domain record with robots.txt URL, content, and crawl delay
             if (domainId) {
               try {
                 await prisma.domain.update({
                   where: { id: domainId },
                   data: {
                     robotsTxtUrl: robotsTxtUrl,
+                    robotsTxtContent: robotsTxtContent,
                     crawlDelay: crawlDelay ? Math.round(crawlDelay) : null,
                   },
                 });
-                console.log(`[Auto-Crawl] ✅ Saved robots.txt URL and crawl delay to domain record`);
+                console.log(`[Auto-Crawl] ✅ Saved robots.txt URL, content, and crawl delay to domain record`);
               } catch (error) {
                 console.error(`[Auto-Crawl] Error updating domain with robots.txt info:`, error);
               }
@@ -642,17 +644,104 @@ export async function startAutomaticCrawl(
         return;
       }
       
-      // STEP 1: Collect all URLs from all sitemaps
+      // STEP 1: Collect all URLs from all sitemaps and save sitemap content
       const allSitemapUrls: Array<{ url: string; priority?: number }> = [];
+      const sitemapContents: Array<{ url: string; content: string }> = [];
+      
+      // Helper function to fetch sitemap content
+      const fetchSitemapContent = async (sitemapUrl: string): Promise<string | null> => {
+        try {
+          const { fetchWithProxy } = await import('./proxy-fetch');
+          const { getProxyManager } = await import('./proxy-manager');
+          const { getSimpleHeaders } = await import('./browser-headers');
+          const proxyManager = getProxyManager();
+          const hasProxies = proxyManager.hasProxies();
+
+          let response: Response;
+
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 15000);
+            
+            try {
+              const browserHeaders = getSimpleHeaders();
+              response = await fetch(sitemapUrl, {
+                headers: browserHeaders,
+                signal: controller.signal,
+              });
+              clearTimeout(timeoutId);
+            } catch (directError) {
+              clearTimeout(timeoutId);
+              const isTimeout = directError instanceof Error && (
+                directError.name === 'AbortError' ||
+                directError.message.includes('timeout') ||
+                directError.message.includes('aborted')
+              );
+              
+              if (isTimeout && hasProxies) {
+                const result = await fetchWithProxy(sitemapUrl, {
+                  retries: 2,
+                  retryDelay: 2000,
+                  timeout: 30000,
+                });
+                response = result.response;
+              } else {
+                throw directError;
+              }
+            }
+          } catch (error) {
+            if (hasProxies) {
+              const result = await fetchWithProxy(sitemapUrl, {
+                retries: 2,
+                retryDelay: 2000,
+                timeout: 30000,
+              });
+              response = result.response;
+            } else {
+              throw error;
+            }
+          }
+
+          if (response.ok) {
+            return await response.text();
+          }
+          return null;
+        } catch (error) {
+          console.error(`Error fetching sitemap content for ${sitemapUrl}:`, error);
+          return null;
+        }
+      };
+
       for (const sitemapUrl of sitemapUrls) {
         try {
           console.log(`[Auto-Crawl] Parsing sitemap: ${sitemapUrl}`);
+          // Fetch content first
+          const sitemapContent = await fetchSitemapContent(sitemapUrl);
+          if (sitemapContent) {
+            sitemapContents.push({ url: sitemapUrl, content: sitemapContent });
+          }
+          
           const sitemapUrlList = await parseSitemap(sitemapUrl);
           console.log(`[Auto-Crawl] Found ${sitemapUrlList.length} URLs in sitemap ${sitemapUrl}`);
           allSitemapUrls.push(...sitemapUrlList);
         } catch (error) {
           console.error(`[Auto-Crawl] ❌ Error parsing sitemap ${sitemapUrl}:`, error);
           // Continue with other sitemaps
+        }
+      }
+      
+      // Save sitemap contents to domain record
+      if (domainId && sitemapContents.length > 0) {
+        try {
+          await prisma.domain.update({
+            where: { id: domainId },
+            data: {
+              sitemaps: sitemapContents,
+            },
+          });
+          console.log(`[Auto-Crawl] ✅ Saved ${sitemapContents.length} sitemap(s) content to domain record`);
+        } catch (error) {
+          console.error(`[Auto-Crawl] Error saving sitemap contents:`, error);
         }
       }
       
