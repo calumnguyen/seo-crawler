@@ -119,6 +119,7 @@ export async function GET(
         discoveredAt: true,
         lastSeenAt: true,
         isActive: true,
+        discoveredVia: true,
       },
     });
 
@@ -146,6 +147,7 @@ export async function GET(
         discoveredAt: backlinkData?.discoveredAt || link.CrawlResult.crawledAt,
         lastSeenAt: backlinkData?.lastSeenAt || link.CrawlResult.crawledAt,
         isActive: backlinkData?.isActive ?? true,
+        discoveredVia: backlinkData?.discoveredVia || 'crawl',
         project: link.CrawlResult.Audit?.Project,
       };
     });

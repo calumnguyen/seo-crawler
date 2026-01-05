@@ -9,7 +9,7 @@ type JsonMetadata = string | number | boolean | null | JsonMetadata[] | { [key: 
 export interface AuditLog {
   id: string;
   auditId: string;
-  category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped';
+  category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery';
   message: string;
   timestamp: Date;
   metadata?: JsonMetadata;
@@ -17,7 +17,7 @@ export interface AuditLog {
 
 export function addAuditLog(
   auditId: string,
-  category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped',
+  category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery',
   message: string,
   metadata?: JsonMetadata
 ): void {
@@ -51,7 +51,7 @@ export function addAuditLog(
 
 export async function getAuditLogs(
   auditId: string,
-  category?: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped',
+  category?: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery',
   limit?: number
 ): Promise<AuditLog[]> {
   try {
@@ -71,7 +71,7 @@ export async function getAuditLogs(
     return dbLogs.map((log: { id: string; auditId: string; category: string; message: string; createdAt: Date; metadata: unknown }) => ({
       id: log.id,
       auditId: log.auditId,
-      category: (log.category || 'setup') as 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped',
+      category: (log.category || 'setup') as 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery',
       message: log.message,
       timestamp: log.createdAt,
       metadata: log.metadata as JsonMetadata | undefined,

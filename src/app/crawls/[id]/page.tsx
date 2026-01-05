@@ -181,6 +181,7 @@ export default function CrawlDetailPage() {
     discoveredAt: string;
     lastSeenAt: string;
     isActive: boolean;
+    discoveredVia: string;
     project: { id: string; name: string } | null;
   }>>([]);
   const [loadingBacklinks, setLoadingBacklinks] = useState(false);
@@ -1016,6 +1017,11 @@ export default function CrawlDetailPage() {
                         )}
                         {backlink.isUgc && (
                           <span className="text-purple-600 dark:text-purple-400">UGC</span>
+                        )}
+                        {backlink.discoveredVia && backlink.discoveredVia !== 'crawl' && (
+                          <span className="rounded bg-blue-100 px-2 py-0.5 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                            Discovered via {backlink.discoveredVia}
+                          </span>
                         )}
                         {backlink.project && (
                           <span>• {backlink.project.name}</span>

@@ -18,7 +18,8 @@ export async function saveBacklinksForCrawlResult(
   sourceUrl: string,
   links: LinkData[],
   projectId: string,
-  baseUrl?: string
+  baseUrl?: string,
+  discoveredVia?: 'google' | 'bing' | 'crawl' // How this backlink was discovered
 ): Promise<number> {
   if (links.length === 0) {
     return 0;
@@ -129,6 +130,7 @@ export async function saveBacklinksForCrawlResult(
       isSponsored: boolean;
       isUgc: boolean;
       linkPosition: string | null;
+      discoveredVia: string | null;
     }> = [];
 
     // Create backlink records for each target page
@@ -166,6 +168,7 @@ export async function saveBacklinksForCrawlResult(
         isSponsored: isSponsored,
         isUgc: isUgc,
         linkPosition: null, // Could be enhanced to track link position (header, footer, content, etc.)
+        discoveredVia: discoveredVia || 'crawl', // Default to 'crawl' if not specified (normal crawl)
       });
     }
 

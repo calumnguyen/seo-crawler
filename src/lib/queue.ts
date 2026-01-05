@@ -6,6 +6,13 @@ export interface CrawlJob {
   url: string; // Required - the URL to crawl
   auditId: string; // Required - audit ID
   fromSitemap?: boolean; // Optional: true if URL came from sitemap (vs discovered link)
+  metadata?: {
+    backlinkDiscovery?: boolean; // True if this is a backlink discovery crawl
+    targetUrl?: string; // The URL we're discovering backlinks for
+    targetCrawlResultId?: string; // The crawl result ID we're discovering backlinks for
+    sourceTitle?: string; // Title from search results
+    discoveredVia?: 'google' | 'bing' | 'crawl'; // How we discovered this page
+  };
   // Optional fields removed to save memory:
   // domainId - can be derived from URL
   // priority - use default priority
@@ -580,7 +587,7 @@ if (!global.__queueProcessorRegistered) {
           console.error(`[Queue] Error setting up link checks for ${url}:`, linkError);
         }
 
-        // Save backlinks (async, non-blocking) - only for internal links
+        // Save backlinks (async, non-blocking) - processes all links (internal and external)
         try {
           // Get projectId for backlink tracking
           const auditForBacklinks = await prismaCheck.audit.findUnique({
@@ -588,22 +595,67 @@ if (!global.__queueProcessorRegistered) {
             select: { projectId: true },
           });
           
-          if (auditForBacklinks?.projectId && seoData.links.length > 0) {
-            const { saveBacklinksForCrawlResult } = await import('./backlinks');
-            // Save backlinks asynchronously - don't wait
-            saveBacklinksForCrawlResult(
+          if (auditForBacklinks?.projectId) {
+            // 1. Forward backlinks: Create backlinks for pages this page links to (if they exist)
+            if (seoData.links.length > 0) {
+              const { saveBacklinksForCrawlResult } = await import('./backlinks');
+              // Determine discoveredVia from job metadata (if this is a backlink discovery crawl)
+              const discoveredVia = job.data.metadata?.discoveredVia || 'crawl';
+              // Save backlinks asynchronously - don't wait
+              saveBacklinksForCrawlResult(
+                crawlResult.id,
+                url,
+                seoData.links,
+                auditForBacklinks.projectId,
+                domainBaseUrl,
+                discoveredVia
+              ).catch((backlinkError) => {
+                console.error(`[Queue] Error saving backlinks for ${url}:`, backlinkError);
+              });
+            }
+            
+            // 2. Retroactive backlinks: Create backlinks from existing pages that link to this page
+            // This handles the case where Page A was crawled first (linking to Page B),
+            // and now Page B is being crawled - we need to create the backlink retroactively
+            const { createRetroactiveBacklinks } = await import('./retroactive-backlinks');
+            createRetroactiveBacklinks(
               crawlResult.id,
               url,
-              seoData.links,
               auditForBacklinks.projectId,
               domainBaseUrl
-            ).catch((backlinkError) => {
-              console.error(`[Queue] Error saving backlinks for ${url}:`, backlinkError);
+            ).catch((retroError) => {
+              console.error(`[Queue] Error creating retroactive backlinks for ${url}:`, retroError);
             });
           }
         } catch (backlinkError) {
           // Don't fail the crawl if backlink saving fails
           console.error(`[Queue] Error setting up backlink saving for ${url}:`, backlinkError);
+        }
+
+        // Reverse link discovery: Query search engines to find pages that link to this page
+        // This discovers backlinks from sites we haven't crawled yet
+        try {
+          const auditForDiscovery = await prismaCheck.audit.findUnique({
+            where: { id: auditId },
+            select: { projectId: true },
+          });
+          
+          // Only run reverse discovery for pages in our projects (not for backlink discovery crawls themselves)
+          if (auditForDiscovery?.projectId && !job.data.metadata?.backlinkDiscovery) {
+            const { discoverBacklinksForPage } = await import('./reverse-link-discovery');
+            // Discover backlinks asynchronously - don't wait
+            discoverBacklinksForPage(
+              crawlResult.id,
+              url,
+              auditId,
+              auditForDiscovery.projectId
+            ).catch((discoveryError) => {
+              console.error(`[Queue] Error discovering backlinks for ${url}:`, discoveryError);
+            });
+          }
+        } catch (discoveryError) {
+          // Don't fail the crawl if reverse discovery fails
+          console.error(`[Queue] Error setting up reverse link discovery for ${url}:`, discoveryError);
         }
       } else {
         console.log(`[Queue] ⚠️  Duplicate crawl result, skipping save and increment for: ${url}`);

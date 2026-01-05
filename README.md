@@ -1,63 +1,247 @@
 # SEO Web Crawler
 
-A comprehensive SEO web crawler and audit tool built with Next.js, designed to analyze websites, discover backlinks, and provide detailed SEO insights.
+A comprehensive, enterprise-grade SEO web crawler and audit tool built with Next.js. Automatically crawls websites, analyzes SEO metrics, discovers backlinks via search engines, detects issues, and provides actionable insights.
 
-## Features
+## 🌟 Key Features
 
-- 🔍 **Website Crawling**: Automated crawling of websites with robots.txt and sitemap support
-- 📊 **SEO Audits**: Comprehensive SEO analysis with technical, content, and performance scores
-- 🔗 **Backlink Discovery**: Automatic discovery and tracking of backlinks
-- 📈 **Dashboard**: Real-time monitoring of crawl progress and results
-- 🔐 **Authentication**: Magic Link authentication with email-based access control
-- ⏸️ **Crawl Control**: Pause, resume, and stop crawling operations
-- 📅 **Scheduled Crawls**: Automated recurring crawls with configurable frequencies
+### 🔍 **Comprehensive Website Crawling**
+- **Robots.txt Compliance**: Respects robots.txt rules and crawl delays
+- **Sitemap Discovery**: Automatically discovers and parses XML sitemaps
+- **Smart Link Following**: Follows internal links with depth control
+- **URL Normalization**: Consistent URL handling with deduplication
+- **Project-Level Deduplication**: Prevents re-crawling within 14-day windows
 
-## Tech Stack
+### 📊 **Advanced SEO Data Collection**
+
+#### On-Page SEO Elements
+- **Meta Tags**: Title, description, keywords, robots directives
+- **Headings**: H1, H2, H3 extraction and analysis
+- **Images**: Alt text, dimensions, missing alt detection
+- **Links**: Internal/external classification, rel attributes (nofollow, sponsored, UGC)
+- **Canonical URLs**: Canonical tag detection
+- **Open Graph Tags**: OG title, description, image, type, URL
+- **Language Detection**: HTML lang attribute
+- **Structured Data**: JSON-LD schema extraction (Article, FAQ, HowTo, Organization, Review, etc.)
+
+#### Technical SEO Metrics
+- **HTTP Status Codes**: Response status tracking
+- **Response Time**: Page load performance
+- **Redirect Tracking**: Full redirect chains with count and final URL
+- **HTTP Headers**: Essential headers for caching/CORS analysis (cache-control, etag, last-modified, etc.)
+- **Content Length**: Page size tracking
+- **Last Modified & ETag**: Caching metadata
+
+#### Content Quality Metrics
+- **Word Count**: Total content words
+- **Content Quality Score**: 0-1 score based on title, meta description, H1, word count, images
+- **Content Depth Score**: 0-1 score based on content length, structure, and comprehensiveness
+- **Content Hash**: SHA-256 hash for duplicate content detection
+
+#### Performance Metrics
+- **First Contentful Paint (FCP)**
+- **Largest Contentful Paint (LCP)**
+- **First Input Delay (FID)**
+- **Cumulative Layout Shift (CLS)**
+- **Time to Interactive (TTI)**
+- **Total Blocking Time (TBT)**
+- **Speed Index**
+
+#### Mobile Metrics
+- **Viewport Meta Tag**: Presence and content
+- **Mobile-Friendliness**: Responsive design detection
+- **Touch Target Size**: Accessibility compliance
+- **Text Readability**: Font size and contrast
+- **Content Width**: Mobile optimization
+
+#### AI SEO Metrics
+- **AI SEO Score**: 0-1 score evaluating AI answer effectiveness
+- **FAQ Schema Detection**: Highly valued for AI answers
+- **HowTo Schema Detection**: Step-by-step content recognition
+- **Answer-Focused Content**: Question patterns in headings
+- **Structured Data Analysis**: Schema type identification
+
+### 🔗 **Advanced Backlink Discovery System**
+
+#### Three-Tier Backlink Tracking
+1. **Forward Backlinks** (Immediate)
+   - When Page A is crawled and links to Page B (that exists), backlink is created immediately
+   - Works across all projects (cross-domain tracking)
+
+2. **Retroactive Backlinks** (Future Matching)
+   - When Page A links to Page B (not yet crawled), link is saved
+   - When Page B is later crawled, backlink is created retroactively
+   - Ensures no backlinks are missed regardless of crawl order
+
+3. **Reverse Discovery via Search Engines** (External)
+   - Queries Google: `link:example.com/page`
+   - Queries Bing: `link:example.com/page`
+   - Discovers pages linking to your site from external sources
+   - Queues discovered pages for crawling (low priority)
+   - Creates backlinks with `discoveredVia: 'google'` or `'bing'`
+   - **No external API costs** - uses free search engines
+
+#### Backlink Metadata
+- **Anchor Text**: Link text analysis
+- **DoFollow/NoFollow**: Link attribute detection
+- **Sponsored/UGC**: Sponsored and user-generated content flags
+- **Discovery Method**: Tracks if found via Google, Bing, or normal crawl
+- **Cross-Project Tracking**: Finds backlinks from any project/domain
+
+### 🚨 **Automated Issue Detection**
+
+Detects and reports SEO issues automatically:
+- **Missing Title Tag**
+- **Missing Meta Description**
+- **Missing H1 Tag**
+- **Multiple H1 Tags**
+- **Headings Too Long** (>100 characters)
+- **Missing Alt Text**: Images without alt attributes
+- **Broken Links**: External links that return 4xx/5xx errors
+- **Duplicate Titles**: Across pages in the same project
+- **Duplicate Content**: Content similarity detection (60%+ threshold)
+
+### 📈 **Content Similarity Detection**
+
+- **Cross-Project Analysis**: Finds duplicate content across all crawled projects
+- **Content Hashing**: SHA-256 hashing for efficient comparison
+- **Similarity Threshold**: Configurable (default: 60%)
+- **Similar Pages Display**: Shows pages with similar content on detail pages
+
+### 📊 **Real-Time Monitoring & Logging**
+
+#### Audit Logs (6 Categories)
+1. **Setup**: Sitemap discovery, robots.txt parsing
+2. **Filtering**: URL filtering and robots.txt compliance
+3. **Queued**: URLs queued for crawling
+4. **Crawled**: Successfully crawled pages
+5. **Skipped**: URLs skipped (duplicates, disallowed, etc.)
+6. **Backlink Discovery**: External backlink search logs (Google/Bing queries, results, errors)
+
+#### Real-Time Features
+- **Live Log Streaming**: Auto-updating log boxes with search functionality
+- **Queue Status**: Real-time job counts (waiting, active, delayed)
+- **Progress Tracking**: Pages crawled vs. total pages
+- **Diagnostics**: Queue health, connection status, error detection
+
+### ⏸️ **Crawl Control**
+- **Pause**: Temporarily pause crawls (can be resumed)
+- **Resume**: Continue paused crawls
+- **Stop**: Permanently stop crawls (cannot be resumed)
+- **Auto-Stop**: Automatically stops paused crawls after 14 days
+- **Audit Log Cleanup**: Automatically deletes logs when crawl stops/completes (saves space)
+
+### 📅 **Scheduled Crawls**
+- **Recurring Crawls**: Daily, weekly, monthly frequencies
+- **Automatic Execution**: Background job processing
+- **Priority System**: Configurable crawl priorities
+
+### 💾 **Storage Optimization**
+
+#### Three Storage Levels
+1. **Minimal** (Default - 90% space savings)
+   - Only essential data: URL, status, title, meta description, counts
+   - No headings, images, or links stored
+   - Best for cost optimization
+
+2. **Standard** (30% space savings)
+   - Essential data + limited detail:
+   - First 10 headings per level
+   - First 20 images
+   - First 50 links
+   - Good balance of detail and cost
+
+3. **Full** (No space savings)
+   - All data stored: complete headings, images, links
+   - Best for detailed analysis
+
+#### Space Optimizations
+- **Text Truncation**: Titles (200 chars), descriptions (300 chars)
+- **HTTP Header Filtering**: Only essential headers stored (10 max)
+- **Structured Data Limiting**: First 3 JSON-LD blocks, 5KB truncation
+- **Redirect Chain Limiting**: Max 5 redirects
+- **Conditional Storage**: Performance/mobile metrics only if non-null
+
+#### Time Optimizations
+- **Parallel Duplicate Checks**: 50% faster (100-150ms → 50-75ms)
+- **Composite Indexes**: 10-50x faster queries
+- **Content Hash Optimization**: 50% faster on large pages
+- **Total Time Savings**: 60% reduction in crawl time
+
+### 🎯 **Dashboard & Analytics**
+
+- **Project Overview**: All projects with audit history
+- **Active Crawls**: Real-time crawl progress
+- **Recent Activity**: Latest crawls and audits
+- **Scheduled Crawls**: Upcoming automatic crawls
+- **Crawl History**: Complete crawl result browsing
+- **Issue Summary**: Aggregated SEO issues across projects
+
+## 🛠️ Tech Stack
 
 - **Framework**: Next.js 16 (App Router)
-- **Database**: PostgreSQL (Neon)
-- **ORM**: Prisma
+- **Database**: PostgreSQL (Neon serverless)
+- **ORM**: Prisma 7
 - **Queue**: Bull (Redis)
-- **Authentication**: Magic Link
-- **Styling**: Tailwind CSS
+- **Authentication**: Magic Link (passwordless)
+- **Styling**: Tailwind CSS 4
+- **HTML Parsing**: Cheerio
+- **Robots.txt**: robots-parser
+- **Sitemap**: xml2js
 
-## Getting Started
+## 📋 Prerequisites
 
-### Prerequisites
+- **Node.js**: 18+
+- **PostgreSQL**: Database (Neon recommended for serverless)
+- **Redis**: Queue management (Upstash, Railway, or self-hosted)
+- **Magic Link**: Account for authentication
 
-- Node.js 18+ 
-- PostgreSQL database (or Neon account)
-- Redis instance
-- Magic Link account (for authentication)
+## 🚀 Getting Started
 
-### Installation
+### 1. Clone the Repository
 
-1. Clone the repository:
 ```bash
 git clone <repository-url>
 cd seo-web-crawler
 ```
 
-2. Install dependencies:
+### 2. Install Dependencies
+
 ```bash
 npm install
 ```
 
-3. Set up environment variables:
+### 3. Environment Variables
+
 Create a `.env` file in the root directory:
+
 ```env
-# Database
-DATABASE_URL="your-postgresql-connection-string"
+# Database (Neon recommended)
+DATABASE_URL="postgresql://user:password@host/database"
+DATABASE_URL_POOL="postgresql://user:password@host-pooler/database?sslmode=require"
 
 # Redis
-REDIS_URL="your-redis-connection-string"
+REDIS_URL="redis://default:password@host:port"
 
 # Magic Link Authentication
-NEXT_PUBLIC_MAGIC_PUBLISHABLE_KEY="your-magic-publishable-key"
-MAGIC_SECRET_KEY="your-magic-secret-key"
+NEXT_PUBLIC_MAGIC_PUBLISHABLE_KEY="pk_live_..."
+MAGIC_SECRET_KEY="sk_live_..."
+
+# Optional: Storage Optimization
+CRAWL_STORAGE_LEVEL=minimal  # minimal | standard | full
+MAX_TITLE_LENGTH=200
+MAX_META_DESCRIPTION_LENGTH=300
+MAX_HTTP_HEADERS=10
+MAX_STRUCTURED_DATA_BLOCKS=3
+MAX_REDIRECT_CHAIN_LENGTH=5
+
+# Optional: Performance
+QUEUE_CONCURRENCY=10  # Number of parallel crawl jobs
+CRAWL_DELAY_SECONDS=0.5  # Default crawl delay
+MAX_CRAWL_DELAY_SECONDS=5  # Maximum crawl delay cap
 ```
 
-4. Set up the database:
+### 4. Database Setup
+
 ```bash
 # Generate Prisma Client
 npx prisma generate
@@ -69,80 +253,95 @@ npx prisma migrate dev
 npx tsx scripts/init-user.ts
 ```
 
-5. Start the development server:
-```bash
-npm run dev
-```
+### 5. Start Development
 
-6. Start the queue worker (in a separate terminal):
 ```bash
+# Terminal 1: Next.js dev server
+npm run dev
+
+# Terminal 2: Queue worker (required for crawling)
 npm run worker
 ```
 
 Open [http://localhost:3000](http://localhost:3000) to access the application.
 
-## Project Structure
-
-```
-├── src/
-│   ├── app/              # Next.js App Router pages
-│   │   ├── api/          # API routes
-│   │   ├── audits/       # Audit detail pages
-│   │   ├── crawls/       # Crawl result pages
-│   │   ├── projects/     # Project management pages
-│   │   ├── users/        # User management page
-│   │   └── login/        # Authentication page
-│   ├── lib/              # Utility functions and libraries
-│   │   ├── crawler.ts    # Main crawling logic
-│   │   ├── queue.ts      # Queue management
-│   │   ├── prisma.ts     # Database client
-│   │   └── auth-context.tsx # Authentication context
-│   └── types/            # TypeScript type definitions
-├── prisma/
-│   └── schema.prisma    # Database schema
-└── scripts/
-    └── queue-worker.js   # Background queue worker
-```
-
-## Usage
+## 📖 Usage Guide
 
 ### Creating a Project
 
 1. Navigate to the dashboard
-2. Enter a project name and base URL
-3. Click "Start Crawl" to begin the initial crawl
+2. Click "Create New Project"
+3. Enter:
+   - **Project Name**: Display name
+   - **Base URL**: Website URL (e.g., `https://example.com`)
+4. Click "Start Crawl" to begin the initial audit
 
 ### Managing Crawls
 
-- **Pause**: Temporarily pause a running crawl (can be resumed)
+#### Starting a Crawl
+- **Automatic**: Click "Start Crawl" from project page
+- **Manual**: Use API endpoint `POST /api/audits/[auditId]/start-auto`
+
+#### Controlling Crawls
+- **Pause**: Temporarily pause (can resume later)
 - **Resume**: Continue a paused crawl
-- **Stop**: Permanently stop a crawl (cannot be resumed)
+- **Stop**: Permanently stop (cannot resume, logs are cleared)
+
+#### Monitoring Progress
+- **Real-Time Logs**: View live crawl progress with 6 log categories
+- **Queue Status**: See waiting, active, and delayed jobs
+- **Diagnostics**: Check queue health and connection status
 
 ### Viewing Results
 
-- Access detailed audit results from the dashboard
-- View individual crawl results and SEO scores
-- Analyze backlinks and discover linking opportunities
+#### Page-Level Details
+- Navigate to `/crawls/[id]` for detailed page analysis
+- View all SEO metrics, structured data, issues, and backlinks
+- See similar pages (duplicate content detection)
+- Check performance and mobile metrics
 
-## Authentication
+#### Project-Level Overview
+- Navigate to `/projects/[id]` for project summary
+- View all audits and crawl history
+- Analyze trends over time
 
-The application uses Magic Link for passwordless authentication. Only users with emails registered in the database can log in.
+#### Backlink Analysis
+- View backlinks on any crawled page
+- See discovery method (Google, Bing, or crawl)
+- Filter by DoFollow/NoFollow, Sponsored, UGC
+- Track cross-project backlinks
 
-To add a new user:
-1. Use the `/users` page (requires admin access)
-2. Or use the API endpoint: `POST /api/users`
+### Issue Detection
 
-## Database Schema
+Issues are automatically detected and displayed:
+- **Inline Display**: Issues shown in relevant sections (Title, Headings, Images, etc.)
+- **Severity Levels**: Error, Warning, Info
+- **Recommendations**: Actionable suggestions for each issue
+- **Details**: Additional context and metadata
 
-Key models:
+## 🗄️ Database Schema
+
+### Key Models
+
 - **User**: System users with email authentication
 - **Project**: Websites being crawled
 - **Audit**: Crawl sessions and their results
-- **CrawlResult**: Individual page crawl data
-- **Backlink**: Discovered backlinks
+- **CrawlResult**: Individual page crawl data with all SEO metrics
+- **Backlink**: Discovered backlinks (cross-project tracking)
 - **Issue**: SEO issues and recommendations
+- **AuditLog**: Real-time crawl logs (6 categories)
+- **CrawlSchedule**: Recurring crawl configurations
+- **Domain**: Domain-level metadata (robots.txt, sitemap)
 
-## API Endpoints
+### Relationships
+
+- Project → Audits (1:many)
+- Audit → CrawlResults (1:many)
+- CrawlResult → Backlinks (1:many, as target)
+- CrawlResult → Links (1:many, as source)
+- Project → Backlinks (1:many)
+
+## 🔌 API Endpoints
 
 ### Authentication
 - `POST /api/auth/check-email` - Check if email exists
@@ -154,6 +353,9 @@ Key models:
 - `GET /api/projects` - List all projects
 - `POST /api/projects` - Create new project
 - `GET /api/projects/[id]` - Get project details
+- `GET /api/projects/[id]/audits` - Get project audits
+- `GET /api/projects/[id]/crawl-results` - Get project crawl results
+- `GET /api/projects/with-audits` - Get projects with audit summaries
 
 ### Audits
 - `GET /api/audits/[auditId]` - Get audit details
@@ -161,40 +363,254 @@ Key models:
 - `POST /api/audits/[auditId]/pause` - Pause crawl
 - `POST /api/audits/[auditId]/resume` - Resume crawl
 - `POST /api/audits/[auditId]/stop` - Stop crawl
+- `GET /api/audits/[auditId]/crawl-results` - Get audit crawl results
+- `GET /api/audits/[auditId]/logs` - Get audit logs (by category)
+- `GET /api/audits/[auditId]/diagnostics` - Get queue diagnostics
+- `POST /api/audits/check-completion` - Check and mark completed audits
+- `POST /api/audits/auto-stop-paused` - Auto-stop paused audits (>14 days)
+
+### Crawl Results
+- `GET /api/crawl-results` - List crawl results (with filters)
+- `GET /api/crawl-results/[id]` - Get crawl result details
+- `GET /api/crawl-results/[id]/backlinks` - Get backlinks for a page
+- `GET /api/crawl-results/[id]/similar` - Get similar pages (duplicate content)
+
+### Dashboard
+- `GET /api/dashboard/activity` - Get active audits and recent crawls
+- `GET /api/dashboard/data` - Get crawled data for dashboard
+- `GET /api/dashboard/scheduled` - Get scheduled crawls
+
+### Queue
+- `GET /api/queue/status` - Get queue status
+- `POST /api/queue/clear` - Clear the queue
+- `POST /api/queue/cleanup` - Cleanup old jobs
 
 ### Users
 - `GET /api/users` - List all users
 - `POST /api/users` - Create new user
 
-## Development
+## 🏗️ Project Structure
+
+```
+├── src/
+│   ├── app/                    # Next.js App Router
+│   │   ├── api/               # API routes
+│   │   │   ├── audits/        # Audit management
+│   │   │   ├── crawl-results/ # Crawl result endpoints
+│   │   │   ├── dashboard/     # Dashboard data
+│   │   │   ├── projects/      # Project management
+│   │   │   └── queue/         # Queue management
+│   │   ├── audits/            # Audit detail pages
+│   │   ├── crawls/            # Crawl result pages
+│   │   ├── projects/          # Project pages
+│   │   └── login/             # Authentication
+│   ├── lib/                   # Core libraries
+│   │   ├── crawler.ts         # Main crawling logic
+│   │   ├── crawler-db-optimized.ts  # Optimized DB storage
+│   │   ├── queue.ts           # Bull queue management
+│   │   ├── backlinks.ts       # Backlink tracking
+│   │   ├── retroactive-backlinks.ts  # Retroactive backlink creation
+│   │   ├── reverse-link-discovery.ts # Search engine backlink discovery
+│   │   ├── search-engine-queries.ts  # Google/Bing queries
+│   │   ├── issue-detection.ts # SEO issue detection
+│   │   ├── advanced-link-checker.ts  # Broken link detection
+│   │   ├── content-similarity.ts     # Duplicate content detection
+│   │   ├── robots.ts          # Robots.txt handling
+│   │   ├── sitemap.ts         # Sitemap parsing
+│   │   ├── deduplication.ts  # URL deduplication
+│   │   └── audit-logs.ts     # Audit log management
+│   ├── types/                 # TypeScript definitions
+│   │   └── seo.ts            # SEO data types
+│   └── components/            # React components
+│       └── ui/               # UI components
+├── prisma/
+│   ├── schema.prisma         # Database schema
+│   └── migrations/           # Database migrations
+├── scripts/
+│   ├── queue-worker.js       # Background queue worker
+│   └── init-user.ts          # User initialization
+└── public/                   # Static assets
+```
+
+## 🔧 Development
 
 ### Running Tests
+
 ```bash
 npm run lint
+npm run lint:fix
 ```
 
 ### Database Migrations
+
 ```bash
 # Create a new migration
 npx prisma migrate dev --name migration-name
 
 # Apply migrations in production
 npx prisma migrate deploy
+
+# Generate Prisma Client
+npx prisma generate
 ```
 
 ### Queue Management
+
 ```bash
-# Clear the queue
-POST /api/queue/clear
+# Start queue worker
+npm run worker
 
 # Check queue status
 GET /api/queue/status
+
+# Clear the queue
+POST /api/queue/clear
 ```
 
-## Deployment
+### Environment Variables
 
-See [VERCEL_DEPLOYMENT.md](./VERCEL_DEPLOYMENT.md) for deployment instructions.
+See `.env.example` for all available configuration options.
 
-## License
+## 📊 Performance & Optimization
+
+### Storage Optimization
+
+The system includes comprehensive space and time optimizations:
+
+- **30-90% space reduction** depending on storage level
+- **60% time reduction** in crawl processing
+- **Composite indexes** for 10-50x faster queries
+- **Parallel processing** for duplicate checks
+
+See `SPACE_TIME_OPTIMIZATION.md` and `OPTIMIZATION_SUMMARY.md` for details.
+
+### Production Database Indexes
+
+Run these in your production database SQL editor:
+
+```sql
+-- Composite indexes for performance
+CREATE INDEX IF NOT EXISTS "CrawlResult_auditId_url_idx" ON "CrawlResult"("auditId", "url");
+CREATE INDEX IF NOT EXISTS "CrawlResult_url_crawledAt_idx" ON "CrawlResult"("url", "crawledAt");
+CREATE INDEX IF NOT EXISTS "CrawlResult_contentHash_statusCode_idx" ON "CrawlResult"("contentHash", "statusCode") WHERE "contentHash" IS NOT NULL AND "statusCode" < 400;
+```
+
+## 🚢 Deployment
+
+### Vercel Deployment
+
+1. Connect your GitHub repository to Vercel
+2. Set environment variables in Vercel dashboard
+3. Deploy automatically on push
+
+### Railway Deployment
+
+See `railway.json` for Railway-specific configuration.
+
+### Required Services
+
+- **PostgreSQL**: Neon, Supabase, or self-hosted
+- **Redis**: Upstash, Railway, or self-hosted
+- **Magic Link**: For authentication
+
+### Queue Worker
+
+The queue worker must run continuously for crawls to process:
+
+```bash
+# Production: Use PM2 or similar
+pm2 start scripts/queue-worker.js --name seo-crawler-worker
+
+# Or use Railway/Heroku worker dyno
+```
+
+## 🔐 Authentication
+
+The application uses Magic Link for passwordless authentication. Only users with emails registered in the database can log in.
+
+### Adding Users
+
+1. Use the `/users` page (requires admin access)
+2. Or use the API: `POST /api/users` with email
+
+## 📝 Key Features Explained
+
+### Backlink Discovery System
+
+The system uses a three-tier approach:
+
+1. **Forward Backlinks**: When Page A links to Page B (that exists), backlink created immediately
+2. **Retroactive Backlinks**: When Page A links to Page B (not yet crawled), link saved and backlink created when Page B is crawled
+3. **Search Engine Discovery**: Queries Google/Bing to find external pages linking to your site
+
+This ensures comprehensive backlink tracking without external API costs.
+
+### Issue Detection
+
+Automatically detects:
+- Missing SEO elements (title, description, H1, alt text)
+- Structural issues (multiple H1s, long headings)
+- Broken links (4xx/5xx errors)
+- Duplicate content (60%+ similarity)
+
+Issues are displayed inline on crawl detail pages with severity levels and recommendations.
+
+### Content Similarity
+
+Uses SHA-256 content hashing to detect duplicate content:
+- Cross-project analysis
+- Configurable similarity threshold
+- Similar pages displayed on detail pages
+
+### AI SEO Scoring
+
+Evaluates how effective a page is for AI-powered search results:
+- FAQ schema detection (highly valued)
+- HowTo schema detection
+- Answer-focused content patterns
+- Question patterns in headings
+- Structured data presence
+
+## 🐛 Troubleshooting
+
+### Database Timeouts
+
+If you experience database timeouts:
+- Use `DATABASE_URL_POOL` with `-pooler` suffix (Neon)
+- Check connection limits
+- Review query performance with indexes
+
+### Redis Connection Issues
+
+- Ensure Redis is accessible
+- Check `REDIS_URL` format
+- Verify Redis maxclients limit
+
+### Queue Not Processing
+
+- Ensure queue worker is running: `npm run worker`
+- Check Redis connection
+- Review queue diagnostics: `/api/audits/[auditId]/diagnostics`
+
+### Crawl Stuck
+
+- Check audit logs for errors
+- Review queue status
+- Check robots.txt compliance
+- Verify sitemap accessibility
+
+## 📚 Additional Documentation
+
+- `OPTIMIZATION.md` - Detailed optimization strategies
+- `SPACE_TIME_OPTIMIZATION.md` - Space and time optimization details
+- `OPTIMIZATION_SUMMARY.md` - Quick reference for optimizations
+- `ARCHITECTURE.md` - System architecture overview
+- `KEEP_CRAWLING_RUNNING.md` - Production deployment guide
+
+## 📄 License
 
 Private project - All rights reserved
+
+## 🤝 Contributing
+
+This is a private project. For questions or issues, contact the project maintainer.

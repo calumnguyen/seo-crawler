@@ -58,21 +58,22 @@ model AuditLog {
 }
 
 model Backlink {
-  id           String      @id
-  projectId    String
-  sourcePageId String
-  linkId       String?
-  anchorText   String?
-  isDofollow   Boolean     @default(true)
+  id            String      @id
+  projectId     String
+  sourcePageId  String
+  linkId        String?
+  anchorText    String?
+  isDofollow    Boolean     @default(true)
   isSponsored  Boolean     @default(false)
-  isUgc        Boolean     @default(false)
-  discoveredAt DateTime    @default(now())
-  lastSeenAt   DateTime    @default(now())
-  isActive     Boolean     @default(true)
-  linkPosition String?
-  Link         Link?       @relation(fields: [linkId], references: [id])
-  Project      Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  CrawlResult  CrawlResult @relation(fields: [sourcePageId], references: [id], onDelete: Cascade)
+  isUgc         Boolean     @default(false)
+  discoveredAt  DateTime    @default(now())
+  lastSeenAt    DateTime    @default(now())
+  isActive      Boolean     @default(true)
+  linkPosition  String?
+  discoveredVia String?    // 'google', 'bing', 'crawl' - how this backlink was discovered
+  Link          Link?       @relation(fields: [linkId], references: [id])
+  Project       Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  CrawlResult   CrawlResult @relation(fields: [sourcePageId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, sourcePageId, linkId])
   @@index([discoveredAt])
@@ -80,6 +81,7 @@ model Backlink {
   @@index([isDofollow])
   @@index([projectId])
   @@index([sourcePageId])
+  @@index([discoveredVia])
 }
 
 model CrawlResult {

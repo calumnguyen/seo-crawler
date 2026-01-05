@@ -63,12 +63,14 @@ export default function AuditDetailPage() {
     queued: any[];
     crawled: any[];
     skipped: any[];
+    'backlink-discovery': any[];
   }>({
     setup: [],
     filtering: [],
     queued: [],
     crawled: [],
     skipped: [],
+    'backlink-discovery': [],
   });
   // Search state for each log box
   const [logSearch, setLogSearch] = useState<{
@@ -77,12 +79,14 @@ export default function AuditDetailPage() {
     queued: string;
     crawled: string;
     skipped: string;
+    'backlink-discovery': string;
   }>({
     setup: '',
     filtering: '',
     queued: '',
     crawled: '',
     skipped: '',
+    'backlink-discovery': '',
   });
   // Search match indices and current match for each log box
   const [logSearchMatches, setLogSearchMatches] = useState<{
@@ -91,12 +95,14 @@ export default function AuditDetailPage() {
     queued: { indices: number[]; current: number };
     crawled: { indices: number[]; current: number };
     skipped: { indices: number[]; current: number };
+    'backlink-discovery': { indices: number[]; current: number };
   }>({
     setup: { indices: [], current: -1 },
     filtering: { indices: [], current: -1 },
     queued: { indices: [], current: -1 },
     crawled: { indices: [], current: -1 },
     skipped: { indices: [], current: -1 },
+    'backlink-discovery': { indices: [], current: -1 },
   });
   // Track if user has scrolled up (for smart auto-scroll)
   const [isAtBottom, setIsAtBottom] = useState<{
@@ -105,12 +111,14 @@ export default function AuditDetailPage() {
     queued: boolean;
     crawled: boolean;
     skipped: boolean;
+    'backlink-discovery': boolean;
   }>({
     setup: true,
     filtering: true,
     queued: true,
     crawled: true,
     skipped: true,
+    'backlink-discovery': true,
   });
   const logRefs = {
     setup: useRef<HTMLDivElement>(null),
@@ -118,6 +126,7 @@ export default function AuditDetailPage() {
     queued: useRef<HTMLDivElement>(null),
     crawled: useRef<HTMLDivElement>(null),
     skipped: useRef<HTMLDivElement>(null),
+    'backlink-discovery': useRef<HTMLDivElement>(null),
   };
 
   useEffect(() => {
@@ -148,7 +157,7 @@ export default function AuditDetailPage() {
   
   // Check scroll position on mount and when logs update
   useEffect(() => {
-    const categories: Array<'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped'> = ['setup', 'filtering', 'queued', 'crawled', 'skipped'];
+    const categories: Array<'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery'> = ['setup', 'filtering', 'queued', 'crawled', 'skipped', 'backlink-discovery'];
     categories.forEach(category => {
       checkScrollPosition(category);
     });
@@ -158,7 +167,7 @@ export default function AuditDetailPage() {
   useEffect(() => {
     const timeoutId = setTimeout(() => {
       // Update search matches when search text changes
-      const categories: Array<'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped'> = ['setup', 'filtering', 'queued', 'crawled', 'skipped'];
+      const categories: Array<'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery'> = ['setup', 'filtering', 'queued', 'crawled', 'skipped', 'backlink-discovery'];
       categories.forEach(category => {
         const searchText = logSearch[category].toLowerCase();
         if (searchText) {
@@ -185,7 +194,7 @@ export default function AuditDetailPage() {
   }, [logSearch, logs]);
   
   // Check if scroll is at bottom for smart auto-scroll
-  const checkScrollPosition = (category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped') => {
+  const checkScrollPosition = (category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery') => {
     const ref = logRefs[category].current;
     if (!ref) return;
     const { scrollTop, scrollHeight, clientHeight } = ref;
@@ -194,7 +203,7 @@ export default function AuditDetailPage() {
   };
   
   // Navigate search matches
-  const navigateSearch = (category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped', direction: 'up' | 'down') => {
+  const navigateSearch = (category: 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery', direction: 'up' | 'down') => {
     const matches = logSearchMatches[category];
     if (matches.indices.length === 0) return;
     
@@ -254,12 +263,13 @@ export default function AuditDetailPage() {
         console.error('Error fetching queue status:', error);
       }
       
-      const [setupRes, filteringRes, queuedRes, crawledRes, skippedRes] = await Promise.all([
+      const [setupRes, filteringRes, queuedRes, crawledRes, skippedRes, backlinkDiscoveryRes] = await Promise.all([
         fetch(`/api/audits/${auditId}/logs?category=setup`),
         fetch(`/api/audits/${auditId}/logs?category=filtering`),
         fetch(`/api/audits/${auditId}/logs?category=queued`),
         fetch(`/api/audits/${auditId}/logs?category=crawled`),
         fetch(`/api/audits/${auditId}/logs?category=skipped`),
+        fetch(`/api/audits/${auditId}/logs?category=backlink-discovery`),
       ]);
 
       if (setupRes.ok) {
@@ -361,6 +371,26 @@ export default function AuditDetailPage() {
         }, 100);
       } else {
         console.error('Failed to fetch skipped logs:', skippedRes.status, await skippedRes.text());
+      }
+
+      if (backlinkDiscoveryRes.ok) {
+        const data = await backlinkDiscoveryRes.json();
+        const reversedLogs = (data.logs || []).reverse();
+        // Check scroll position BEFORE updating logs to avoid stale state
+        const ref = logRefs['backlink-discovery'].current;
+        const wasAtBottom = ref ? (ref.scrollHeight - ref.scrollTop - ref.clientHeight < 10) : true;
+        setLogs(prev => ({ ...prev, 'backlink-discovery': reversedLogs }));
+        // Smart auto-scroll: only if was at bottom before update
+        setTimeout(() => {
+          if (wasAtBottom && logRefs['backlink-discovery'].current) {
+            logRefs['backlink-discovery'].current.scrollTo({ top: logRefs['backlink-discovery'].current.scrollHeight, behavior: 'smooth' });
+            setIsAtBottom(prev => ({ ...prev, 'backlink-discovery': true }));
+          } else {
+            setIsAtBottom(prev => ({ ...prev, 'backlink-discovery': false }));
+          }
+        }, 100);
+      } else {
+        console.error('Failed to fetch backlink-discovery logs:', backlinkDiscoveryRes.status, await backlinkDiscoveryRes.text());
       }
     } catch (error) {
       console.error('Error fetching logs:', error);
@@ -1118,6 +1148,79 @@ export default function AuditDetailPage() {
                             {new Date(log.timestamp).toLocaleTimeString()}
                           </span>{' '}
                           {highlightText(log.message, logSearch.skipped)}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* External Backlink Discovery Logs */}
+            <div className="mb-4">
+              <div className="rounded-lg border border-zinc-200 bg-white dark:border-zinc-700 dark:bg-zinc-900">
+                <div className="border-b border-zinc-200 bg-blue-50 px-4 py-2 dark:border-zinc-700 dark:bg-blue-900/20">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-blue-800 dark:text-blue-200">
+                      🔗 External Backlink Discovery ({logs['backlink-discovery'].length})
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="Search..."
+                        value={logSearch['backlink-discovery']}
+                        onChange={(e) => {
+                          setLogSearch(prev => ({ ...prev, 'backlink-discovery': e.target.value }));
+                          setIsAtBottom(prev => ({ ...prev, 'backlink-discovery': false }));
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && e.shiftKey) {
+                            navigateSearch('backlink-discovery', 'up');
+                          } else if (e.key === 'Enter') {
+                            navigateSearch('backlink-discovery', 'down');
+                          }
+                        }}
+                        className="w-32 rounded border border-zinc-300 bg-white px-2 py-1 text-xs dark:border-zinc-600 dark:bg-zinc-800"
+                      />
+                      {logSearchMatches['backlink-discovery'].indices.length > 0 && (
+                        <span className="text-xs text-zinc-600 dark:text-zinc-400">
+                          {logSearchMatches['backlink-discovery'].current + 1}/{logSearchMatches['backlink-discovery'].indices.length}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div 
+                  ref={logRefs['backlink-discovery']} 
+                  className="h-96 overflow-y-auto p-4 font-mono text-xs"
+                  onScroll={() => checkScrollPosition('backlink-discovery')}
+                >
+                  {logs['backlink-discovery'].length === 0 ? (
+                    <div className="text-zinc-500 dark:text-zinc-400">No backlink discovery logs yet</div>
+                  ) : (
+                    logs['backlink-discovery'].map((log, index) => {
+                      const isCurrentMatch = logSearchMatches['backlink-discovery'].current >= 0 && logSearchMatches['backlink-discovery'].indices[logSearchMatches['backlink-discovery'].current] === index;
+                      const metadata = log.metadata as any;
+                      const isError = metadata?.error || log.message.includes('❌') || log.message.includes('⚠️');
+                      const isSuccess = log.message.includes('✅') || log.message.includes('📊');
+                      return (
+                        <div 
+                          key={log.id} 
+                          className={`mb-1 text-zinc-700 dark:text-zinc-300 ${
+                            isCurrentMatch ? 'bg-yellow-200 dark:bg-yellow-800' : ''
+                          } ${
+                            isError ? 'text-red-600 dark:text-red-400' : isSuccess ? 'text-green-600 dark:text-green-400' : ''
+                          }`}
+                        >
+                          <span className="text-zinc-500 dark:text-zinc-500">
+                            {new Date(log.timestamp).toLocaleTimeString()}
+                          </span>{' '}
+                          {highlightText(log.message, logSearch['backlink-discovery'])}
+                          {metadata?.searchEngine && (
+                            <span className="ml-2 rounded bg-blue-100 px-1 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                              {metadata.searchEngine}
+                            </span>
+                          )}
                         </div>
                       );
                     })

@@ -8,7 +8,7 @@ export async function GET(
   try {
     const { auditId } = await params;
     const searchParams = request.nextUrl.searchParams;
-    const category = searchParams.get('category') as 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | null;
+    const category = searchParams.get('category') as 'setup' | 'filtering' | 'queued' | 'crawled' | 'skipped' | 'backlink-discovery' | null;
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : undefined;
     
     const logs = await getAuditLogs(auditId, category || undefined, limit);
