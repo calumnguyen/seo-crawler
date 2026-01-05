@@ -358,7 +358,7 @@ export default function CrawlGraph({ projectId }: CrawlGraphProps) {
         <ForceGraph2D
           ref={fgRef}
           graphData={graphDataForRender}
-          nodeLabel={(node: Node) => {
+          nodeLabel={(node: any) => {
             const title = node.title || node.url;
             const shortTitle = title.length > 50 ? title.substring(0, 50) + '...' : title;
             const shortUrl = node.url.length > 60 ? node.url.substring(0, 60) + '...' : node.url;
@@ -373,7 +373,7 @@ export default function CrawlGraph({ projectId }: CrawlGraphProps) {
               </div>
             `;
           }}
-          nodeVal={(node: Node) => {
+          nodeVal={(node: any) => {
             if (node.isRoot) return 20;
             return Math.max(8, Math.min(16, 8 + (node.internalLinksCount / 5)));
           }}
@@ -404,12 +404,12 @@ export default function CrawlGraph({ projectId }: CrawlGraphProps) {
               document.body.style.cursor = 'default';
             }
           }}
-          onNodeClick={(node: Node) => {
+          onNodeClick={(node: any) => {
             if (node && node.id) {
               router.push(`/crawls/${node.id}`);
             }
           }}
-          nodeCanvasObject={(node: Node & { x?: number; y?: number }, ctx: CanvasRenderingContext2D, globalScale: number) => {
+          nodeCanvasObject={(node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
             const label = node.title || node.url;
             const fontSize = node.isRoot ? 11 : 9;
             const nodeSize = node.isRoot ? 20 : Math.max(8, Math.min(16, 8 + (node.internalLinksCount / 5)));
@@ -446,14 +446,16 @@ export default function CrawlGraph({ projectId }: CrawlGraphProps) {
               ctx.fillText(text, node.x || 0, node.y || 0);
             }
           }}
-          d3Force={{
-            charge: { strength: -400 },
-            link: { distance: 100 },
-            center: { strength: 0.1 },
-            collision: { strength: 0.9, radius: (node: Node) => node.isRoot ? 35 : 25 },
-          }}
           enableZoomInteraction={true}
           enablePanInteraction={true}
+          {...({
+            d3Force: {
+              charge: { strength: -400 },
+              link: { distance: 100 },
+              center: { strength: 0.1 },
+              collision: { strength: 0.9, radius: (node: any) => node.isRoot ? 35 : 25 },
+            },
+          } as any)}
         />
       </div>
 
