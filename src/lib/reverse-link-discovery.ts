@@ -21,12 +21,20 @@ interface DiscoveredBacklink {
   discoveredAt: Date;
 }
 
+// In-memory cache to track which domains have been searched per audit
+// Key: `${auditId}:${domain}`, Value: timestamp
+const domainSearchCache = new Map<string, number>();
+const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
 /**
  * Discover backlink sources for a crawled page
  * Queries search engines to find pages that link to the target page
  * Then queues those pages for crawling to extract actual links
  * 
  * This runs asynchronously and doesn't block the main crawl process
+ * 
+ * NOTE: Since we search for link:domain.com (not link:domain.com/path),
+ * we deduplicate searches by domain to avoid querying the same domain multiple times
  */
 export async function discoverBacklinksForPage(
   targetCrawlResultId: string,
@@ -35,13 +43,98 @@ export async function discoverBacklinksForPage(
   projectId: string
 ): Promise<number> {
   try {
-    console.log(`[Reverse-Discovery] 🔍 Discovering backlinks for: ${targetUrl}`);
+    // Extract domain (no subdirectories) - same logic as queryGoogleBacklinks
+    const urlObj = new URL(targetUrl);
+    const domain = urlObj.hostname.replace(/^www\./, '');
+    const cacheKey = `${auditId}:${domain}`;
     
-    // Query search engines to find pages that link to this URL
-    // Try Google first, then Bing if needed
-    const googleResults = await queryGoogleBacklinks(targetUrl, 100, auditId);
-    const bingResults = googleResults.length < 100 
-      ? await queryBingBacklinks(targetUrl, 100 - googleResults.length, auditId)
+    // Check if we've already searched for this domain in this audit
+    const lastSearchTime = domainSearchCache.get(cacheKey);
+    const now = Date.now();
+    
+    if (lastSearchTime && (now - lastSearchTime) < CACHE_TTL) {
+      // Already searched for this domain recently, skip to avoid duplicate API calls
+      console.log(`[Reverse-Discovery] ⏭️  Skipping backlink search for ${targetUrl} - already searched domain ${domain} in this audit`);
+      if (auditId) {
+        addAuditLog(
+          auditId,
+          'backlink-discovery',
+          `⏭️  Skipped backlink search for ${targetUrl} - domain ${domain} already searched in this audit`,
+          {
+            targetUrl,
+            domain,
+            skipped: true,
+            reason: 'domain_already_searched',
+          }
+        );
+      }
+      return 0;
+    }
+    
+    // Mark this domain as searched
+    domainSearchCache.set(cacheKey, now);
+    
+    // Clean up old cache entries (older than 24 hours)
+    if (domainSearchCache.size > 1000) {
+      // Only clean up if cache is getting large
+      for (const [key, timestamp] of domainSearchCache.entries()) {
+        if (now - timestamp > CACHE_TTL) {
+          domainSearchCache.delete(key);
+        }
+      }
+    }
+    
+    console.log(`[Reverse-Discovery] 🔍 Discovering backlinks for: ${targetUrl} (domain: ${domain})`);
+    
+    // Query search engines to find pages that link to this domain
+    // We search for link:domain.com (domain/subdomain only, no paths)
+    // Try Google first, then Bing if Google quota is exceeded or if we need more results
+    let googleResults: any[] = [];
+    let googleQuotaExceeded = false;
+    
+    try {
+      googleResults = await queryGoogleBacklinks(targetUrl, 100, auditId);
+    } catch (error: any) {
+      // Check if it's a quota error
+      if (error?.isQuotaError || (error instanceof Error && error.message.includes('quota'))) {
+        googleQuotaExceeded = true;
+        console.log(`[Reverse-Discovery] ⚠️ Google API quota exceeded, falling back to Bing for: ${targetUrl}`);
+        if (auditId) {
+          addAuditLog(
+            auditId,
+            'backlink-discovery',
+            `⚠️ Google API quota exceeded (10,000/day limit reached). Falling back to Bing for domain: ${domain}`,
+            {
+              targetUrl,
+              domain,
+              searchEngine: 'google',
+              quotaExceeded: true,
+              fallbackTo: 'bing',
+            }
+          );
+        }
+      } else {
+        // Other error, log and continue
+        console.error(`[Reverse-Discovery] Google API error:`, error);
+        if (auditId) {
+          addAuditLog(
+            auditId,
+            'backlink-discovery',
+            `❌ Google API error for ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
+            {
+              targetUrl,
+              domain,
+              searchEngine: 'google',
+              error: error instanceof Error ? error.message : String(error),
+            }
+          );
+        }
+      }
+    }
+    
+    // Use Bing if Google quota exceeded or if we need more results
+    const bingResults = (googleQuotaExceeded || googleResults.length < 100)
+      ? await queryBingBacklinks(targetUrl, googleQuotaExceeded ? 100 : (100 - googleResults.length), auditId)
       : [];
     
     const searchResults = [

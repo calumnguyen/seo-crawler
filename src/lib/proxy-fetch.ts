@@ -141,12 +141,13 @@ export async function fetchWithProxy(
 
       // Use proxy-aware fetch in Node.js environment
       if (proxy && typeof window === 'undefined') {
+        let proxyError: Error | null = null;
         try {
           // Use undici for proxy support (available in Node.js 18+)
           const { fetch: undiciFetch, ProxyAgent } = await import('undici');
           
           const proxyAgent = new ProxyAgent(proxy.url);
-          console.log(`[ProxyFetch] Attempt ${attempt + 1}/${retries + 1}: Using proxy: ${proxy.host}:${proxy.port}`);
+          console.log(`[ProxyFetch] Attempt ${attempt + 1}/${maxAttempts}: Using proxy: ${proxy.host}:${proxy.port}`);
           
           // undici's fetch returns a compatible Response, cast for TypeScript
           // Runtime compatibility is fine, TypeScript types differ slightly
@@ -154,14 +155,17 @@ export async function fetchWithProxy(
             ...attemptOptions,
             dispatcher: proxyAgent,
           } as Record<string, unknown>)) as unknown as Response;
-        } catch {
+        } catch (undiciError) {
+          proxyError = undiciError instanceof Error ? undiciError : new Error(String(undiciError));
+          console.warn(`[ProxyFetch] undici import/usage failed: ${proxyError.message}, trying https-proxy-agent fallback...`);
+          
           // Fallback to https-proxy-agent with node-fetch if undici fails
           try {
             const { HttpsProxyAgent } = await import('https-proxy-agent');
             const { default: nodeFetch } = await import('node-fetch');
             
             const agent = new HttpsProxyAgent(proxy.url);
-            console.log(`[ProxyFetch] Attempt ${attempt + 1}/${retries + 1}: Using proxy with node-fetch: ${proxy.host}:${proxy.port}`);
+            console.log(`[ProxyFetch] Attempt ${attempt + 1}/${maxAttempts}: Using proxy with node-fetch: ${proxy.host}:${proxy.port}`);
             
             const nodeResponse = await nodeFetch(url, {
               ...attemptOptions,
@@ -174,9 +178,14 @@ export async function fetchWithProxy(
               statusText: nodeResponse.statusText,
               headers: nodeResponse.headers as unknown as HeadersInit,
             });
-          } catch {
+            proxyError = null; // Success with fallback
+          } catch (nodeFetchError) {
+            const nodeFetchErrorMsg = nodeFetchError instanceof Error ? nodeFetchError.message : String(nodeFetchError);
+            console.error(`[ProxyFetch] https-proxy-agent/node-fetch import/usage also failed: ${nodeFetchErrorMsg}`);
+            console.error(`[ProxyFetch] Original undici error: ${proxyError?.message}`);
+            console.error(`[ProxyFetch] Proxy libraries not available. Make sure 'undici' and 'https-proxy-agent' packages are installed.`);
+            console.warn(`[ProxyFetch] Falling back to direct connection (proxy will not be used)`);
             // Final fallback: use standard fetch (proxy won't work but request will proceed)
-            console.warn('[ProxyFetch] Proxy libraries not available, using direct connection');
             response = await fetch(url, attemptOptions);
           }
         }

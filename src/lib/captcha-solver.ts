@@ -46,7 +46,17 @@ class TwoCaptchaSolver implements CaptchaSolver {
       const submitData = await submitResponse.json();
       
       if (submitData.status !== 1) {
-        return { success: false, error: submitData.request || 'Failed to submit CAPTCHA' };
+        const errorMsg = submitData.request || submitData.error_text || 'Failed to submit CAPTCHA';
+        console.error(`[CaptchaSolver] 2Captcha submit failed: status=${submitData.status}, error="${errorMsg}"`);
+        // Common errors: ERROR_ZERO_BALANCE, ERROR_WRONG_USER_KEY, ERROR_KEY_DOES_NOT_EXIST
+        // 2Captcha returns blog URLs for unsupported CAPTCHA types (like Google Search reCAPTCHA)
+        if (errorMsg.includes('balance') || errorMsg.includes('BALANCE')) {
+          console.error(`[CaptchaSolver] ⚠️ 2Captcha account balance is zero or insufficient`);
+        }
+        if (errorMsg.includes('blog') || errorMsg.includes('http')) {
+          console.warn(`[CaptchaSolver] ⚠️ 2Captcha doesn't support this CAPTCHA type (returned blog URL). This is expected for Google Search reCAPTCHA.`);
+        }
+        return { success: false, error: errorMsg };
       }
 
       const captchaId = submitData.request;
@@ -67,7 +77,9 @@ class TwoCaptchaSolver implements CaptchaSolver {
         }
 
         if (resultData.request !== 'CAPCHA_NOT_READY') {
-          return { success: false, error: resultData.request || 'CAPTCHA solving failed' };
+          const errorMsg = resultData.request || resultData.error_text || 'CAPTCHA solving failed';
+          console.error(`[CaptchaSolver] 2Captcha result error: status=${resultData.status}, error="${errorMsg}"`);
+          return { success: false, error: errorMsg };
         }
       }
 
@@ -96,7 +108,9 @@ class TwoCaptchaSolver implements CaptchaSolver {
       const submitData = await submitResponse.json();
       
       if (submitData.status !== 1) {
-        return { success: false, error: submitData.request || 'Failed to submit image CAPTCHA' };
+        const errorMsg = submitData.request || submitData.error_text || 'Failed to submit image CAPTCHA';
+        console.error(`[CaptchaSolver] 2Captcha image submit failed: status=${submitData.status}, error="${errorMsg}"`);
+        return { success: false, error: errorMsg };
       }
 
       const captchaId = submitData.request;
@@ -116,15 +130,20 @@ class TwoCaptchaSolver implements CaptchaSolver {
         }
 
         if (resultData.request !== 'CAPCHA_NOT_READY') {
-          return { success: false, error: resultData.request || 'Image CAPTCHA solving failed' };
+          const errorMsg = resultData.request || resultData.error_text || 'Image CAPTCHA solving failed';
+          console.error(`[CaptchaSolver] 2Captcha image result error: status=${resultData.status}, error="${errorMsg}"`);
+          return { success: false, error: errorMsg };
         }
       }
 
+      console.warn(`[CaptchaSolver] Image CAPTCHA solving timeout after ${timeout}ms`);
       return { success: false, error: 'Image CAPTCHA solving timeout' };
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`[CaptchaSolver] Exception during image CAPTCHA solving:`, error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMsg,
       };
     }
   }

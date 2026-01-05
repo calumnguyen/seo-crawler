@@ -194,6 +194,17 @@ if (!global.__queueEventListenersRegistered) {
       return;
     }
     
+    // Handle "Missing key" and "Missing lock" errors - these are non-critical
+    // These occur when delayed jobs' keys expire or locks timeout before processing
+    // Bull/BullMQ handles these gracefully by skipping/retrying internally
+    if (errorMessage.includes('Missing key for job') || 
+        errorMessage.includes('Missing lock for job')) {
+      // These are expected for delayed jobs - BullMQ handles them internally
+      // Only log at debug level to reduce noise
+      // The job will be retried or skipped automatically by BullMQ
+      return; // Silently ignore - non-critical
+    }
+    
     // Log other errors for debugging
     console.error('[Queue] Redis error:', errorMessage);
   });
@@ -571,13 +582,15 @@ if (!global.__queueProcessorRegistered) {
         if (projectDomain !== crawledUrlDomain) {
           shouldSaveToDb = false;
           console.log(`[Queue] ⚠️  External domain detected (backlink discovery): ${crawledUrlDomain} (project: ${projectDomain}), skipping save to audit`);
-          addAuditLog(auditId, 'crawled', `Crawled external page (backlink source): ${url}`, { 
+          // Log to backlink-discovery category, not crawled
+          addAuditLog(auditId, 'backlink-discovery', `🔍 Crawled external page (backlink source): ${url}`, { 
             url, 
             statusCode: seoData.statusCode, 
             title: seoData.title,
             externalDomain: true,
             projectDomain,
             crawledDomain: crawledUrlDomain,
+            backlinkDiscoveryCrawl: true,
           });
         }
       }
@@ -591,7 +604,17 @@ if (!global.__queueProcessorRegistered) {
         crawlResult = await saveCrawlResultToDb(seoData, auditId, domainId, domainBaseUrl);
         if (crawlResult) {
           console.log(`[Queue] Saved crawl result for: ${url}`);
-          addAuditLog(auditId, 'crawled', `Crawled: ${url}`, { url, statusCode: seoData.statusCode, title: seoData.title });
+          // Log to appropriate category based on crawl type
+          const logCategory = job.data.metadata?.backlinkDiscovery ? 'backlink-discovery' : 'crawled';
+          const logMessage = job.data.metadata?.backlinkDiscovery 
+            ? `🔍 Crawled backlink source: ${url}` 
+            : `Crawled: ${url}`;
+          addAuditLog(auditId, logCategory, logMessage, { 
+            url, 
+            statusCode: seoData.statusCode, 
+            title: seoData.title,
+            backlinkDiscoveryCrawl: job.data.metadata?.backlinkDiscovery || false,
+          });
         
         // Detect and save issues for this crawl result
         try {
@@ -621,24 +644,53 @@ if (!global.__queueProcessorRegistered) {
 
         // Reverse link discovery: Query search engines to find pages that link to this page
         // This discovers backlinks from sites we haven't crawled yet
+        // IMPORTANT: Only search for backlinks to pages in the project's domain, not external domains
         try {
           const auditForDiscovery = await prismaCheck.audit.findUnique({
             where: { id: auditId },
-            select: { projectId: true },
+            select: { 
+              projectId: true,
+              Project: {
+                select: {
+                  domain: true,
+                  baseUrl: true,
+                },
+              },
+            },
           });
           
-          // Only run reverse discovery for pages in our projects (not for backlink discovery crawls themselves)
+          // Only run reverse discovery if:
+          // 1. Page belongs to a project
+          // 2. Page is NOT from a backlink discovery crawl (external pages)
+          // 3. Page's domain matches the project's domain (prevent recursive searches for external domains)
           if (auditForDiscovery?.projectId && !job.data.metadata?.backlinkDiscovery) {
-            const { discoverBacklinksForPage } = await import('./reverse-link-discovery');
-            // Discover backlinks asynchronously - don't wait
-            discoverBacklinksForPage(
-              crawlResult.id,
-              url,
-              auditId,
-              auditForDiscovery.projectId
-            ).catch((discoveryError) => {
-              console.error(`[Queue] Error discovering backlinks for ${url}:`, discoveryError);
-            });
+            // Check if the crawled page belongs to the project's domain
+            try {
+              const urlObj = new URL(url);
+              const pageDomain = urlObj.hostname.replace(/^www\./, '');
+              const projectDomain = auditForDiscovery.Project?.domain?.replace(/^www\./, '');
+              
+              // Only trigger discovery for pages in the project's domain
+              // This prevents recursive searches when external pages (discovered via Google) are crawled
+              if (projectDomain && pageDomain === projectDomain) {
+                const { discoverBacklinksForPage } = await import('./reverse-link-discovery');
+                // Discover backlinks asynchronously - don't wait
+                discoverBacklinksForPage(
+                  crawlResult.id,
+                  url,
+                  auditId,
+                  auditForDiscovery.projectId
+                ).catch((discoveryError) => {
+                  console.error(`[Queue] Error discovering backlinks for ${url}:`, discoveryError);
+                });
+              } else {
+                // External page - skip backlink discovery to prevent recursive searches
+                console.log(`[Queue] ⏭️  Skipping backlink discovery for external page: ${url} (domain: ${pageDomain}, project domain: ${projectDomain})`);
+              }
+            } catch (urlError) {
+              // Invalid URL, skip discovery
+              console.log(`[Queue] ⏭️  Skipping backlink discovery - invalid URL: ${url}`);
+            }
           }
         } catch (discoveryError) {
           // Don't fail the crawl if reverse discovery fails

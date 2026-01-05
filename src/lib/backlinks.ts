@@ -184,7 +184,71 @@ export async function saveBacklinksForCrawlResult(
         skipDuplicates: true, // Skip if duplicate (projectId, sourcePageId, linkId) already exists
       });
       
-      return backlinksToCreate.length;
+      const backlinksCreated = backlinksToCreate.length;
+      
+      // Log to audit if we have audit context (for backlink discovery tracking)
+      if (backlinksCreated > 0) {
+        // Try to find the audit for this project to log the backlink creation
+        try {
+          const audit = await prisma.audit.findFirst({
+            where: { projectId },
+            orderBy: { startedAt: 'desc' },
+            select: { id: true },
+          });
+          
+          if (audit) {
+            const { addAuditLog } = await import('./audit-logs');
+            const discoveredViaLabel = discoveredVia === 'google' ? 'Google' : discoveredVia === 'bing' ? 'Bing' : 'crawl';
+            addAuditLog(
+              audit.id,
+              'backlink-discovery',
+              `✅ Found ${backlinksCreated} backlink(s) from ${sourceUrl} (discovered via ${discoveredViaLabel})`,
+              {
+                sourceUrl,
+                sourceCrawlResultId,
+                backlinksCreated,
+                discoveredVia: discoveredVia || 'crawl',
+                targetPages: backlinksToCreate.length,
+                backlinkFound: true,
+              }
+            );
+          }
+        } catch (logError) {
+          // Don't fail if logging fails
+          console.error(`[Backlinks] Error logging backlink creation:`, logError);
+        }
+      } else if (discoveredVia && (discoveredVia === 'google' || discoveredVia === 'bing')) {
+        // Log when no backlinks found from a discovered page (for tracking)
+        try {
+          const audit = await prisma.audit.findFirst({
+            where: { projectId },
+            orderBy: { startedAt: 'desc' },
+            select: { id: true },
+          });
+          
+          if (audit) {
+            const { addAuditLog } = await import('./audit-logs');
+            const discoveredViaLabel = discoveredVia === 'google' ? 'Google' : 'Bing';
+            addAuditLog(
+              audit.id,
+              'backlink-discovery',
+              `ℹ️ No backlinks found from ${sourceUrl} (discovered via ${discoveredViaLabel})`,
+              {
+                sourceUrl,
+                sourceCrawlResultId,
+                backlinksCreated: 0,
+                discoveredVia: discoveredVia,
+                backlinkFound: false,
+              }
+            );
+          }
+        } catch (logError) {
+          // Don't fail if logging fails
+          console.error(`[Backlinks] Error logging no backlinks found:`, logError);
+        }
+      }
+      
+      return backlinksCreated;
     } catch (error) {
       console.error(`[Backlinks] Error creating backlinks:`, error);
       return 0;
