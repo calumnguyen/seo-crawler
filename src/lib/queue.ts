@@ -743,7 +743,8 @@ if (!global.__queueProcessorRegistered) {
                   } else {
                     // Domain crawl still has many pending jobs - defer backlink discovery
                     // Log to backlink-discovery category once per audit to inform user
-                    if (!hasLoggedDeferred) {
+                    // Use atomic check-and-set to prevent duplicate logs in concurrent scenarios
+                    if (!(global as any)[deferredLogKey]) {
                       (global as any)[deferredLogKey] = true;
                       addAuditLog(
                         auditId,
@@ -756,7 +757,8 @@ if (!global.__queueProcessorRegistered) {
                         }
                       );
                     }
-                    console.log(`[Queue] ⏭️  Deferring backlink discovery for ${url} - ${pendingDomainCrawls} domain crawls still pending (will trigger when < 50 pending)`);
+                    // Don't log to console on every deferral to reduce noise
+                    // console.log(`[Queue] ⏭️  Deferring backlink discovery for ${url} - ${pendingDomainCrawls} domain crawls still pending (will trigger when < 50 pending)`);
                   }
                 } catch (queueCheckError) {
                   // If queue check fails, skip backlink discovery to be safe

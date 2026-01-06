@@ -538,17 +538,8 @@ export async function startAutomaticCrawl(
   }
   console.log(`[Auto-Crawl] Using crawl delay: ${crawlDelaySeconds}s (from robots.txt: ${crawlDelay || 'not specified'}, default: ${defaultCrawlDelay}s, max: ${maxCrawlDelay}s)`);
 
-  // Add initial backlink discovery log explaining deferred status
-  addAuditLog(
-    auditId,
-    'backlink-discovery',
-    `⏸️  Google and Bing search API queries for backlink discovery are currently deferred. They will start automatically once domain crawl is mostly complete (< 50 pending domain pages). This ensures all domain pages are crawled first before branching out to external backlinks.`,
-    {
-      deferred: true,
-      status: 'waiting_for_domain_crawl',
-      threshold: 50,
-    }
-  );
+  // Note: Deferred backlink discovery log is handled in queue.ts when actually needed
+  // (Only logs once per audit when pending > 50, with actual pending count)
 
   let totalUrlsQueued = 0;
 
