@@ -855,38 +855,48 @@ if (!global.__queueProcessorRegistered) {
       // 3. pagesTotal might be updated dynamically
       // The completion check endpoint will verify there are truly no jobs left
       
-      // Extract and queue new links
-      const newLinks = extractLinksFromCrawlResult(seoData, url);
-      const baseUrl = new URL(url).origin;
-      // Use crawlDelay from robots.txt, default to 0.5 seconds if not set (faster crawling)
-      // Can be overridden with CRAWL_DELAY_SECONDS environment variable
-      // IMPORTANT: Cap crawl delay to prevent extremely slow crawling
-      // Note: crawlDelay is already defined above in the processor function
-      const defaultCrawlDelay = parseFloat(process.env.CRAWL_DELAY_SECONDS || '0.5');
-      const maxCrawlDelay = parseFloat(process.env.MAX_CRAWL_DELAY_SECONDS || '5'); // Cap at 5 seconds max
-      const robotsLinkDelay = robotsTxt.getCrawlDelay();
-      const linkCrawlDelay = robotsLinkDelay 
-      ? Math.min(robotsLinkDelay, maxCrawlDelay) // Cap the delay
-      : defaultCrawlDelay;
+      // CRITICAL: Do NOT follow links from backlink discovery pages
+      // Backlink discovery pages are crawled only to extract backlinks, not to discover more pages
+      // This prevents branching out too far from the original domain
+      const isBacklinkDiscoveryCrawl = job.data.metadata?.backlinkDiscovery || false;
       
       let newJobsQueued = 0;
       let disallowedCount = 0;
-      // Limit link following to prevent infinite crawling
-      // Only follow internal links from same domain
-      const maxLinksToFollow = 20; // Limit links per page to prevent explosion
       
-      // Check if audit is paused or stopped - don't queue new links if so
-      const currentAudit = await prisma.audit.findUnique({
-        where: { id: auditId },
-        select: { status: true },
-      });
+      if (isBacklinkDiscoveryCrawl) {
+        // Skip link following for backlink discovery pages
+        console.log(`[Queue] ⏭️  Skipping link following for backlink discovery page: ${url} (to prevent branching out from domain)`);
+      } else {
+        // Extract and queue new links (only for domain pages, not backlink discovery pages)
+        const newLinks = extractLinksFromCrawlResult(seoData, url);
+        const baseUrl = new URL(url).origin;
+        // Use crawlDelay from robots.txt, default to 0.5 seconds if not set (faster crawling)
+        // Can be overridden with CRAWL_DELAY_SECONDS environment variable
+        // IMPORTANT: Cap crawl delay to prevent extremely slow crawling
+        // Note: crawlDelay is already defined above in the processor function
+        const defaultCrawlDelay = parseFloat(process.env.CRAWL_DELAY_SECONDS || '0.5');
+        const maxCrawlDelay = parseFloat(process.env.MAX_CRAWL_DELAY_SECONDS || '5'); // Cap at 5 seconds max
+        const robotsLinkDelay = robotsTxt.getCrawlDelay();
+        const linkCrawlDelay = robotsLinkDelay 
+        ? Math.min(robotsLinkDelay, maxCrawlDelay) // Cap the delay
+        : defaultCrawlDelay;
+        
+        // Limit link following to prevent infinite crawling
+        // Only follow internal links from same domain
+        const maxLinksToFollow = 20; // Limit links per page to prevent explosion
+        
+        // Check if audit is paused or stopped - don't queue new links if so
+        const currentAudit = await prisma.audit.findUnique({
+          where: { id: auditId },
+          select: { status: true },
+        });
 
-      if (currentAudit?.status === 'paused' || currentAudit?.status === 'stopped') {
-        console.log(`[Queue] Audit ${auditId} is ${currentAudit.status}, not queuing new links`);
-        return crawlResult;
-      }
+        if (currentAudit?.status === 'paused' || currentAudit?.status === 'stopped') {
+          console.log(`[Queue] Audit ${auditId} is ${currentAudit.status}, not queuing new links`);
+          return crawlResult;
+        }
 
-      for (const link of newLinks.slice(0, maxLinksToFollow)) {
+        for (const link of newLinks.slice(0, maxLinksToFollow)) {
         // Only follow internal links (same domain)
         if (!link.isExternal && shouldCrawlUrl(link.href, url, 0)) {
           // CRITICAL: Check robots.txt BEFORE queuing discovered links
@@ -980,17 +990,18 @@ if (!global.__queueProcessorRegistered) {
           }
           throw error; // Re-throw other errors
         }
+        } // closes if (!link.isExternal && shouldCrawlUrl(...))
+        } // closes for loop
+        
+        if (disallowedCount > 0) {
+          console.log(`[Queue] Skipped ${disallowedCount} disallowed links from ${url}`);
         }
-      }
-      
-      if (disallowedCount > 0) {
-        console.log(`[Queue] Skipped ${disallowedCount} disallowed links from ${url}`);
-      }
-      
-      // Note: pagesTotal is updated by check-completion route as: crawled + skipped + queued_in_redis
-      if (newJobsQueued > 0) {
-        console.log(`[Queue] Queued ${newJobsQueued} new links from ${url} (${disallowedCount} skipped by robots.txt)`);
-      }
+        
+        // Note: pagesTotal is updated by check-completion route as: crawled + skipped + queued_in_redis
+        if (newJobsQueued > 0) {
+          console.log(`[Queue] Queued ${newJobsQueued} new links from ${url} (${disallowedCount} skipped by robots.txt)`);
+        }
+        } // closes else block (isBacklinkDiscoveryCrawl)
       
       return crawlResult;
     } catch (error: unknown) {
