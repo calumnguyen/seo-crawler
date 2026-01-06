@@ -493,10 +493,10 @@ export default function Dashboard() {
               <div className="space-y-3">
                 {projects.slice(0, 5).map((project) => {
                   const lastCompletedAudit = project.audits
-                    ?.filter((a) => a.status === 'completed' && (a as any).completedAt)
+                    ?.filter((a) => (a.status === 'completed' || a.status === 'stopped') && ((a as any).completedAt || (a as any).updatedAt))
                     .sort((a, b) => {
-                      const aDate = (a as any).completedAt ? new Date((a as any).completedAt).getTime() : 0;
-                      const bDate = (b as any).completedAt ? new Date((b as any).completedAt).getTime() : 0;
+                      const aDate = (a as any).completedAt ? new Date((a as any).completedAt).getTime() : ((a as any).updatedAt ? new Date((a as any).updatedAt).getTime() : 0);
+                      const bDate = (b as any).completedAt ? new Date((b as any).completedAt).getTime() : ((b as any).updatedAt ? new Date((b as any).updatedAt).getTime() : 0);
                       return bDate - aDate;
                     })[0];
                   
@@ -511,9 +511,9 @@ export default function Dashboard() {
                       <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
                         {project.baseUrl}
                       </div>
-                      {lastCompletedAudit && (lastCompletedAudit as any).completedAt && (
+                      {lastCompletedAudit && ((lastCompletedAudit as any).completedAt || (lastCompletedAudit as any).updatedAt) && (
                         <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
-                          Last crawled: {new Date((lastCompletedAudit as any).completedAt).toLocaleDateString()}
+                          Last crawled: {new Date((lastCompletedAudit as any).completedAt || (lastCompletedAudit as any).updatedAt).toLocaleDateString()}
                         </div>
                       )}
                     </div>
@@ -561,10 +561,10 @@ export default function Dashboard() {
                   a.status === 'pending_approval'
                 ) || [];
                 const lastCompletedAudit = mostRecent.audits
-                  ?.filter((a) => a.status === 'completed' && (a as any).completedAt)
+                  ?.filter((a) => (a.status === 'completed' || a.status === 'stopped') && ((a as any).completedAt || (a as any).updatedAt))
                   .sort((a, b) => {
-                    const aDate = (a as any).completedAt ? new Date((a as any).completedAt).getTime() : 0;
-                    const bDate = (b as any).completedAt ? new Date((b as any).completedAt).getTime() : 0;
+                    const aDate = (a as any).completedAt ? new Date((a as any).completedAt).getTime() : ((a as any).updatedAt ? new Date((a as any).updatedAt).getTime() : 0);
+                    const bDate = (b as any).completedAt ? new Date((b as any).completedAt).getTime() : ((b as any).updatedAt ? new Date((b as any).updatedAt).getTime() : 0);
                     return bDate - aDate;
                   })[0];
                 
@@ -815,13 +815,21 @@ export default function Dashboard() {
                         ))}
                       </div>
                     ) : lastCompletedAudit ? (
-                      <div className="rounded border border-green-200 bg-green-50 p-2 dark:border-green-800 dark:bg-green-900/20">
+                      <div className={`rounded border p-2 ${
+                        lastCompletedAudit.status === 'completed' 
+                          ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20'
+                          : 'border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-900/20'
+                      }`}>
                         <div className="flex items-center justify-between">
                           <span className="text-xs text-zinc-600 dark:text-zinc-400">
-                            Last completed: {lastCompletedAudit && (lastCompletedAudit as any).completedAt ? new Date((lastCompletedAudit as any).completedAt).toLocaleDateString() : 'N/A'}
+                            Last {lastCompletedAudit.status === 'completed' ? 'completed' : 'stopped'}: {lastCompletedAudit && ((lastCompletedAudit as any).completedAt || (lastCompletedAudit as any).updatedAt) ? new Date((lastCompletedAudit as any).completedAt || (lastCompletedAudit as any).updatedAt).toLocaleDateString() : 'N/A'}
                           </span>
-                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-800 dark:bg-green-900 dark:text-green-200">
-                            completed
+                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                            lastCompletedAudit.status === 'completed'
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200'
+                              : 'bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200'
+                          }`}>
+                            {lastCompletedAudit.status === 'completed' ? 'completed' : 'stopped'}
                           </span>
                         </div>
                         <div className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">

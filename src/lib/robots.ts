@@ -238,6 +238,10 @@ export function normalizeUrl(url: string, baseUrl?: string): string {
       urlObj.port = '';
     }
     
+    // Remove session IDs from path (e.g., page.jsp;jsessionid=ABC123 -> page.jsp)
+    // Java servlets often embed session IDs in the path like this
+    urlObj.pathname = urlObj.pathname.replace(/;jsessionid=[^/?#]*/gi, '');
+    
     // Remove trailing slash (except for root)
     if (urlObj.pathname !== '/' && urlObj.pathname.endsWith('/')) {
       urlObj.pathname = urlObj.pathname.slice(0, -1);
@@ -246,14 +250,52 @@ export function normalizeUrl(url: string, baseUrl?: string): string {
     // Remove fragment
     urlObj.hash = '';
     
-    // Sort query parameters
+    // Remove tracking/analytics/session query parameters that don't affect content
+    // These parameters are commonly used for tracking but don't change page content
+    const trackingParams = new Set([
+      'jsessionid',
+      'sessionid',
+      'sid',
+      'phpsessid',
+      'aspsessionid',
+      'utm_source',
+      'utm_medium',
+      'utm_campaign',
+      'utm_term',
+      'utm_content',
+      'fbclid',
+      'gclid',
+      'ref',
+      'referrer',
+      'source',
+      'campaign',
+      'affiliate',
+      'partner',
+      '_ga',
+      '_gid',
+      'fb_source',
+      'fb_action_ids',
+      'fb_action_types',
+      'fb_ref',
+      'mc_cid',
+      'mc_eid',
+      'ncid',
+      'icid',
+      'ncid',
+    ]);
+    
+    // Filter and sort query parameters
     if (urlObj.search) {
       const params = new URLSearchParams(urlObj.search);
       const sortedParams = new URLSearchParams();
       Array.from(params.keys())
         .sort()
         .forEach((key) => {
-          sortedParams.set(key, params.get(key)!);
+          const lowerKey = key.toLowerCase();
+          // Only keep parameters that are not tracking/session parameters
+          if (!trackingParams.has(lowerKey)) {
+            sortedParams.set(key, params.get(key)!);
+          }
         });
       urlObj.search = sortedParams.toString();
     }

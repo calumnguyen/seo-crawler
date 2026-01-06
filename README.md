@@ -6,10 +6,16 @@ A comprehensive, enterprise-grade SEO web crawler and audit tool built with Next
 
 ### 🔍 **Comprehensive Website Crawling**
 - **Robots.txt Compliance**: Respects robots.txt rules and crawl delays
-- **Sitemap Discovery**: Automatically discovers and parses XML sitemaps
+- **Sitemap Discovery**: Automatically discovers and parses XML sitemaps (supports multiple sitemaps)
+- **Sitemap & Robots.txt Storage**: Stores and displays robots.txt and all discovered sitemaps with syntax highlighting
 - **Smart Link Following**: Follows internal links with depth control
-- **URL Normalization**: Consistent URL handling with deduplication
+- **URL Normalization**: Consistent URL handling with session ID and tracking parameter removal
 - **Project-Level Deduplication**: Prevents re-crawling within 14-day windows
+- **Automatic Deduplication**: Built-in deduplication during crawling (normalized URLs)
+- **Honeypot Detection**: Advanced static analysis to detect and avoid honeypot links/traps
+- **Proxy Support**: Rotating proxy support with automatic failover
+- **Browser Headers**: Realistic browser headers to avoid bot detection
+- **Cookie Management**: Session cookie handling for stateful crawling
 
 ### 📊 **Advanced SEO Data Collection**
 
@@ -73,12 +79,12 @@ A comprehensive, enterprise-grade SEO web crawler and audit tool built with Next
    - Ensures no backlinks are missed regardless of crawl order
 
 3. **Reverse Discovery via Search Engines** (External)
-   - Queries Google: `link:example.com/page`
-   - Queries Bing: `link:example.com/page`
+   - Uses **Google Programmable Search API** (Custom Search) to query: `link:example.com`
+   - Uses **Bing Search API** for additional coverage
    - Discovers pages linking to your site from external sources
    - Queues discovered pages for crawling (low priority)
    - Creates backlinks with `discoveredVia: 'google'` or `'bing'`
-   - **No external API costs** - uses free search engines
+   - Integrated with **AntiCaptcha** service for CAPTCHA solving when needed
 
 #### Backlink Metadata
 - **Anchor Text**: Link text analysis
@@ -107,6 +113,24 @@ Detects and reports SEO issues automatically:
 - **Similarity Threshold**: Configurable (default: 60%)
 - **Similar Pages Display**: Shows pages with similar content on detail pages
 
+### 📊 **Interactive Graph Visualization**
+
+- **Page Relationship Graph**: Interactive, zoomable graph showing crawled pages and their relationships
+- **Directory-Based Coloring**: Pages grouped by subdirectory with unique colors (150+ color palette)
+- **Root Node Identification**: Automatically identifies and highlights the homepage/root page
+- **Node Sizing**: Node size based on internal link count
+- **Click Navigation**: Click nodes to navigate to page details
+- **Force-Directed Layout**: Smooth, intuitive layout algorithm
+
+### 🗑️ **Duplicate URL Cleanup**
+
+- **Automatic Deduplication**: Built into crawling process (prevents duplicates at source)
+- **URL Normalization**: Strips session IDs (jsessionid), tracking parameters (utm_*, fbclid, gclid, etc.)
+- **Content-Hash Deduplication**: Removes pages with identical content but different URLs
+- **Cleanup Script**: `scripts/clean-duplicate-urls.ts` for batch cleanup
+- **Web UI Cleanup**: Button on `/crawls` page to remove content-hash duplicates with live logs
+- **Dry Run Mode**: Preview what will be deleted before cleanup
+
 ### 📊 **Real-Time Monitoring & Logging**
 
 #### Audit Logs (6 Categories)
@@ -129,6 +153,7 @@ Detects and reports SEO issues automatically:
 - **Stop**: Permanently stop crawls (cannot be resumed)
 - **Auto-Stop**: Automatically stops paused crawls after 14 days
 - **Audit Log Cleanup**: Automatically deletes logs when crawl stops/completes (saves space)
+- **Approval System**: Optional robots.txt approval for failed checks
 
 ### 📅 **Scheduled Crawls**
 - **Recurring Crawls**: Daily, weekly, monthly frequencies
@@ -170,11 +195,13 @@ Detects and reports SEO issues automatically:
 ### 🎯 **Dashboard & Analytics**
 
 - **Project Overview**: All projects with audit history
+- **Most Recent Project**: Quick view of latest project with crawl status (completed/stopped)
 - **Active Crawls**: Real-time crawl progress
 - **Recent Activity**: Latest crawls and audits
 - **Scheduled Crawls**: Upcoming automatic crawls
-- **Crawl History**: Complete crawl result browsing
+- **Crawl History**: Complete crawl result browsing (`/crawls`)
 - **Issue Summary**: Aggregated SEO issues across projects
+- **Graph View**: Interactive page relationship visualization
 
 ## 🛠️ Tech Stack
 
@@ -187,6 +214,7 @@ Detects and reports SEO issues automatically:
 - **HTML Parsing**: Cheerio
 - **Robots.txt**: robots-parser
 - **Sitemap**: xml2js
+- **Graph Visualization**: D3.js, react-force-graph-2d
 
 ## 📋 Prerequisites
 
@@ -194,6 +222,9 @@ Detects and reports SEO issues automatically:
 - **PostgreSQL**: Database (Neon recommended for serverless)
 - **Redis**: Queue management (Upstash, Railway, or self-hosted)
 - **Magic Link**: Account for authentication
+- **Google Programmable Search API**: For backlink discovery (requires API key and Custom Search Engine ID)
+- **Bing Search API**: For additional backlink discovery coverage (optional)
+- **AntiCaptcha**: Account for CAPTCHA solving (optional, but recommended for search engine queries)
 
 ## 🚀 Getting Started
 
@@ -238,6 +269,19 @@ MAX_REDIRECT_CHAIN_LENGTH=5
 QUEUE_CONCURRENCY=10  # Number of parallel crawl jobs
 CRAWL_DELAY_SECONDS=0.5  # Default crawl delay
 MAX_CRAWL_DELAY_SECONDS=5  # Maximum crawl delay cap
+
+# Optional: Proxy Support (format: host:port, one per line or comma-separated)
+PROXY_LIST="proxy1.com:8080,proxy2.com:8080"
+
+# Optional: Search Engine APIs (for backlink discovery)
+GOOGLE_API_KEY="your-google-programmable-search-api-key"
+GOOGLE_CUSTOM_SEARCH_ENGINE_ID="your-google-custom-search-engine-id"
+BING_SEARCH_API_KEY="your-bing-search-api-key"
+
+# Optional: CAPTCHA Solving (for search engine queries)
+CAPTCHA_SOLVER="anticaptcha"  # 'anticaptcha' | '2captcha' | 'none'
+CAPTCHA_API_KEY="your-anticaptcha-api-key"
+CAPTCHA_TIMEOUT=120000  # Timeout in milliseconds (default: 120000 = 2 minutes)
 ```
 
 ### 4. Database Setup
@@ -272,9 +316,11 @@ Open [http://localhost:3000](http://localhost:3000) to access the application.
 1. Navigate to the dashboard
 2. Click "Create New Project"
 3. Enter:
-   - **Project Name**: Display name
-   - **Base URL**: Website URL (e.g., `https://example.com`)
+   - **Project Name**: Display name (must be unique)
+   - **Base URL**: Website URL (e.g., `https://example.com`, must be unique)
 4. Click "Start Crawl" to begin the initial audit
+
+**Note**: Duplicate project names or domains are prevented. The system will show an error if you try to create a duplicate.
 
 ### Managing Crawls
 
@@ -286,6 +332,7 @@ Open [http://localhost:3000](http://localhost:3000) to access the application.
 - **Pause**: Temporarily pause (can resume later)
 - **Resume**: Continue a paused crawl
 - **Stop**: Permanently stop (cannot resume, logs are cleared)
+- **Approve**: Skip robots.txt check if it fails (for manual approval)
 
 #### Monitoring Progress
 - **Real-Time Logs**: View live crawl progress with 6 log categories
@@ -302,14 +349,60 @@ Open [http://localhost:3000](http://localhost:3000) to access the application.
 
 #### Project-Level Overview
 - Navigate to `/projects/[id]` for project summary
-- View all audits and crawl history
+- View all audits and crawl history (completed and stopped)
+- View robots.txt and sitemaps with syntax highlighting
+- Interactive graph visualization of page relationships
 - Analyze trends over time
+
+#### Graph Visualization
+- Click "Graph View" tab on project detail page
+- Interactive, zoomable graph of crawled pages
+- Pages colored by subdirectory
+- Click nodes to navigate to page details
+- Auto-centered and zoomed on initial load
 
 #### Backlink Analysis
 - View backlinks on any crawled page
 - See discovery method (Google, Bing, or crawl)
 - Filter by DoFollow/NoFollow, Sponsored, UGC
 - Track cross-project backlinks
+
+#### Configuration Files (Robots.txt & Sitemaps)
+- View robots.txt content with syntax highlighting
+- View all discovered sitemaps
+- Click any sitemap to view its content with XML syntax highlighting
+- All content displayed in modal (no downloads needed)
+
+### Duplicate Cleanup
+
+#### Automatic Deduplication
+- Built into the crawling process
+- Prevents duplicates based on normalized URLs
+- Strips session IDs and tracking parameters automatically
+
+#### Manual Cleanup
+
+**Option 1: Command Line Script**
+```bash
+# Dry run to see what will be deleted
+npx tsx scripts/clean-duplicate-urls.ts --dry-run
+
+# Clean URL-based duplicates (session IDs, tracking params)
+npx tsx scripts/clean-duplicate-urls.ts
+
+# Clean content-hash duplicates (same content, different URLs)
+npx tsx scripts/clean-duplicate-urls.ts --content-hash-only --dry-run
+npx tsx scripts/clean-duplicate-urls.ts --content-hash-only
+
+# For a specific audit
+npx tsx scripts/clean-duplicate-urls.ts --audit-id=<audit-id> --dry-run
+```
+
+**Option 2: Web UI**
+1. Navigate to `/crawls` page
+2. Click "Remove Duplicates (Content Hash)" button
+3. View live logs in the modal
+4. Page refreshes automatically after cleanup
 
 ### Issue Detection
 
@@ -331,7 +424,7 @@ Issues are automatically detected and displayed:
 - **Issue**: SEO issues and recommendations
 - **AuditLog**: Real-time crawl logs (6 categories)
 - **CrawlSchedule**: Recurring crawl configurations
-- **Domain**: Domain-level metadata (robots.txt, sitemap)
+- **Domain**: Domain-level metadata (robots.txt content, sitemap URLs and content)
 
 ### Relationships
 
@@ -351,10 +444,16 @@ Issues are automatically detected and displayed:
 
 ### Projects
 - `GET /api/projects` - List all projects
-- `POST /api/projects` - Create new project
+- `POST /api/projects` - Create new project (prevents duplicates)
 - `GET /api/projects/[id]` - Get project details
+- `DELETE /api/projects/[id]` - Delete project
 - `GET /api/projects/[id]/audits` - Get project audits
-- `GET /api/projects/[id]/crawl-results` - Get project crawl results
+- `GET /api/projects/[id]/crawl-results` - Get project crawl results (domain-filtered)
+- `GET /api/projects/[id]/graph` - Get graph data for visualization
+- `GET /api/projects/[id]/robots` - Get robots.txt content
+- `GET /api/projects/[id]/sitemaps` - Get all sitemaps
+- `GET /api/projects/[id]/sitemaps/[index]` - Get specific sitemap content
+- `GET /api/projects/[id]/backlinks` - Get project backlinks
 - `GET /api/projects/with-audits` - Get projects with audit summaries
 
 ### Audits
@@ -363,6 +462,7 @@ Issues are automatically detected and displayed:
 - `POST /api/audits/[auditId]/pause` - Pause crawl
 - `POST /api/audits/[auditId]/resume` - Resume crawl
 - `POST /api/audits/[auditId]/stop` - Stop crawl
+- `POST /api/audits/[auditId]/approve` - Approve crawl (skip robots.txt)
 - `GET /api/audits/[auditId]/crawl-results` - Get audit crawl results
 - `GET /api/audits/[auditId]/logs` - Get audit logs (by category)
 - `GET /api/audits/[auditId]/diagnostics` - Get queue diagnostics
@@ -370,10 +470,11 @@ Issues are automatically detected and displayed:
 - `POST /api/audits/auto-stop-paused` - Auto-stop paused audits (>14 days)
 
 ### Crawl Results
-- `GET /api/crawl-results` - List crawl results (with filters)
+- `GET /api/crawl-results` - List crawl results (with filters, pagination)
 - `GET /api/crawl-results/[id]` - Get crawl result details
 - `GET /api/crawl-results/[id]/backlinks` - Get backlinks for a page
 - `GET /api/crawl-results/[id]/similar` - Get similar pages (duplicate content)
+- `POST /api/crawl-results/deduplicate-content-hash` - Remove content-hash duplicates with logs
 
 ### Dashboard
 - `GET /api/dashboard/activity` - Get active audits and recent crawls
@@ -384,6 +485,7 @@ Issues are automatically detected and displayed:
 - `GET /api/queue/status` - Get queue status
 - `POST /api/queue/clear` - Clear the queue
 - `POST /api/queue/cleanup` - Cleanup old jobs
+- `POST /api/queue/force-stop` - Force stop all jobs
 
 ### Users
 - `GET /api/users` - List all users
@@ -396,17 +498,17 @@ Issues are automatically detected and displayed:
 │   ├── app/                    # Next.js App Router
 │   │   ├── api/               # API routes
 │   │   │   ├── audits/        # Audit management
-│   │   │   ├── crawl-results/ # Crawl result endpoints
+│   │   │   ├── crawl-results/ # Crawl result endpoints (including deduplication)
 │   │   │   ├── dashboard/     # Dashboard data
-│   │   │   ├── projects/      # Project management
+│   │   │   ├── projects/      # Project management (including graph, robots, sitemaps)
 │   │   │   └── queue/         # Queue management
 │   │   ├── audits/            # Audit detail pages
-│   │   ├── crawls/            # Crawl result pages
-│   │   ├── projects/          # Project pages
+│   │   ├── crawls/            # Crawl result pages (including deduplication UI)
+│   │   ├── projects/          # Project pages (including graph view)
 │   │   └── login/             # Authentication
 │   ├── lib/                   # Core libraries
 │   │   ├── crawler.ts         # Main crawling logic
-│   │   ├── crawler-db-optimized.ts  # Optimized DB storage
+│   │   ├── crawler-db-optimized.ts  # Optimized DB storage (with deduplication)
 │   │   ├── queue.ts           # Bull queue management
 │   │   ├── backlinks.ts       # Backlink tracking
 │   │   ├── retroactive-backlinks.ts  # Retroactive backlink creation
@@ -415,20 +517,31 @@ Issues are automatically detected and displayed:
 │   │   ├── issue-detection.ts # SEO issue detection
 │   │   ├── advanced-link-checker.ts  # Broken link detection
 │   │   ├── content-similarity.ts     # Duplicate content detection
-│   │   ├── robots.ts          # Robots.txt handling
-│   │   ├── sitemap.ts         # Sitemap parsing
-│   │   ├── deduplication.ts  # URL deduplication
-│   │   └── audit-logs.ts     # Audit log management
+│   │   ├── robots.ts          # Robots.txt handling (with storage)
+│   │   ├── sitemap.ts         # Sitemap parsing (with storage)
+│   │   ├── deduplication.ts   # URL deduplication
+│   │   ├── honeypot-detector.ts # Honeypot link detection
+│   │   ├── proxy-fetch.ts     # Proxy support
+│   │   ├── proxy-manager.ts   # Proxy rotation
+│   │   ├── browser-headers.ts # Browser header simulation
+│   │   ├── cookie-manager.ts  # Cookie handling
+│   │   ├── captcha-detector.ts # CAPTCHA detection
+│   │   ├── captcha-solver.ts  # CAPTCHA solving (placeholder)
+│   │   └── audit-logs.ts      # Audit log management
+│   ├── components/
+│   │   ├── CrawlGraph.tsx     # Interactive graph visualization
+│   │   └── ui/                # UI components
 │   ├── types/                 # TypeScript definitions
 │   │   └── seo.ts            # SEO data types
-│   └── components/            # React components
-│       └── ui/               # UI components
+│   └── generated/            # Generated Prisma client
 ├── prisma/
 │   ├── schema.prisma         # Database schema
 │   └── migrations/           # Database migrations
 ├── scripts/
 │   ├── queue-worker.js       # Background queue worker
-│   └── init-user.ts          # User initialization
+│   ├── init-user.ts          # User initialization
+│   ├── clean-duplicate-urls.ts # Duplicate cleanup script
+│   └── check-remaining-duplicates.ts # Diagnostic script
 └── public/                   # Static assets
 ```
 
@@ -465,6 +578,21 @@ GET /api/queue/status
 
 # Clear the queue
 POST /api/queue/clear
+```
+
+### Duplicate Cleanup Scripts
+
+```bash
+# Clean URL-based duplicates (session IDs, tracking params)
+npx tsx scripts/clean-duplicate-urls.ts --dry-run
+npx tsx scripts/clean-duplicate-urls.ts
+
+# Clean content-hash duplicates
+npx tsx scripts/clean-duplicate-urls.ts --content-hash-only --dry-run
+npx tsx scripts/clean-duplicate-urls.ts --content-hash-only
+
+# Check for remaining duplicates (diagnostic)
+npx tsx scripts/check-remaining-duplicates.ts
 ```
 
 ### Environment Variables
@@ -532,6 +660,7 @@ The application uses Magic Link for passwordless authentication. Only users with
 
 1. Use the `/users` page (requires admin access)
 2. Or use the API: `POST /api/users` with email
+3. Or use the script: `npx tsx scripts/init-user.ts`
 
 ## 📝 Key Features Explained
 
@@ -541,9 +670,12 @@ The system uses a three-tier approach:
 
 1. **Forward Backlinks**: When Page A links to Page B (that exists), backlink created immediately
 2. **Retroactive Backlinks**: When Page A links to Page B (not yet crawled), link saved and backlink created when Page B is crawled
-3. **Search Engine Discovery**: Queries Google/Bing to find external pages linking to your site
+3. **Search Engine Discovery**: Uses **Google Programmable Search API** (Custom Search) and **Bing Search API** to find external pages linking to your site
+   - Integrated with **AntiCaptcha** service for CAPTCHA solving when needed
+   - Requires API keys for Google (API key + Custom Search Engine ID) and Bing
+   - Google API has a 10,000 queries/day free tier, then falls back to Bing
 
-This ensures comprehensive backlink tracking without external API costs.
+This ensures comprehensive backlink tracking with reliable API-based discovery.
 
 ### Issue Detection
 
@@ -570,6 +702,40 @@ Evaluates how effective a page is for AI-powered search results:
 - Answer-focused content patterns
 - Question patterns in headings
 - Structured data presence
+
+### Honeypot Detection
+
+Advanced static analysis to detect honeypot links:
+- CSS hiding patterns (display:none, visibility:hidden, opacity:0)
+- Off-screen positioning (left:-9999px, etc.)
+- Zero-size elements
+- Hidden class names
+- Aria-hidden attributes
+- Suspicious URL patterns
+
+Prevents crawlers from following trap links that waste resources.
+
+### URL Normalization & Deduplication
+
+Comprehensive URL normalization to prevent duplicates:
+- Strips session IDs from paths (jsessionid, phpsessid, etc.)
+- Removes tracking parameters (utm_*, fbclid, gclid, ref, etc.)
+- Normalizes trailing slashes
+- Removes fragments (#)
+- Sorts query parameters
+- Removes default ports
+
+Automatic deduplication during crawling prevents duplicate storage.
+
+### Graph Visualization
+
+Interactive graph showing page relationships:
+- Force-directed layout for intuitive navigation
+- Directory-based coloring (150+ unique colors)
+- Root node identification and highlighting
+- Node sizing based on link count
+- Click-to-navigate functionality
+- Auto-centering and zooming
 
 ## 🐛 Troubleshooting
 
@@ -599,6 +765,13 @@ If you experience database timeouts:
 - Check robots.txt compliance
 - Verify sitemap accessibility
 
+### Duplicate Pages
+
+- Automatic deduplication should prevent most duplicates
+- Use cleanup script for existing duplicates: `scripts/clean-duplicate-urls.ts`
+- Check normalization rules if duplicates persist
+- Use content-hash deduplication for same-content duplicates
+
 ## 📚 Additional Documentation
 
 - `OPTIMIZATION.md` - Detailed optimization strategies
@@ -606,6 +779,9 @@ If you experience database timeouts:
 - `OPTIMIZATION_SUMMARY.md` - Quick reference for optimizations
 - `ARCHITECTURE.md` - System architecture overview
 - `KEEP_CRAWLING_RUNNING.md` - Production deployment guide
+- `HONEYPOT_DETECTION_ASSESSMENT.md` - Honeypot detection analysis
+- `SEARCH_ENGINE_BACKLINK_SOLUTIONS.md` - Backlink discovery strategies
+- `RESEARCH.md` - Comprehensive research documentation
 
 ## 📄 License
 

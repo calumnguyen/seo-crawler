@@ -31,6 +31,9 @@ export default function CrawlsPage() {
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const limit = 50;
+  const [deduplicating, setDeduplicating] = useState(false);
+  const [deduplicationLogs, setDeduplicationLogs] = useState<string[]>([]);
+  const [showDeduplicationModal, setShowDeduplicationModal] = useState(false);
 
   const fetchCrawls = async () => {
     try {
@@ -52,6 +55,32 @@ export default function CrawlsPage() {
     fetchCrawls();
   }, [page]);
 
+  const handleDeduplicateContentHash = async () => {
+    setDeduplicating(true);
+    setDeduplicationLogs([]);
+    setShowDeduplicationModal(true);
+
+    try {
+      const response = await fetch('/api/crawl-results/deduplicate-content-hash', {
+        method: 'POST',
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setDeduplicationLogs(data.logs || []);
+        // Refresh the crawl results after deduplication
+        await fetchCrawls();
+      } else {
+        setDeduplicationLogs([`Error: ${data.error}`, ...(data.logs || [])]);
+      }
+    } catch (error) {
+      setDeduplicationLogs([`Error: ${error instanceof Error ? error.message : 'Unknown error'}`]);
+    } finally {
+      setDeduplicating(false);
+    }
+  };
+
   if (loading && crawlResults.length === 0) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -72,12 +101,21 @@ export default function CrawlsPage() {
               {total} pages crawled
             </p>
           </div>
-          <Link
-            href="/"
-            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
-          >
-            ← Back to Dashboard
-          </Link>
+          <div className="flex gap-3">
+            <button
+              onClick={handleDeduplicateContentHash}
+              disabled={deduplicating}
+              className="rounded-lg border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed dark:border-blue-700 dark:bg-blue-900/20 dark:text-blue-400 dark:hover:bg-blue-900/30"
+            >
+              {deduplicating ? 'Deduplicating...' : 'Remove Duplicates (Content Hash)'}
+            </button>
+            <Link
+              href="/"
+              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-black transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-50 dark:hover:bg-zinc-800"
+            >
+              ← Back to Dashboard
+            </Link>
+          </div>
         </div>
 
         {crawlResults.length === 0 ? (
@@ -151,6 +189,68 @@ export default function CrawlsPage() {
               </button>
             </div>
           </>
+        )}
+
+        {/* Deduplication Modal */}
+        {showDeduplicationModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-4xl max-h-[80vh] rounded-lg bg-white shadow-xl dark:bg-zinc-900">
+              <div className="flex items-center justify-between border-b border-zinc-200 p-4 dark:border-zinc-700">
+                <h2 className="text-xl font-semibold text-black dark:text-zinc-50">
+                  Content Hash Deduplication
+                </h2>
+                <button
+                  onClick={() => setShowDeduplicationModal(false)}
+                  className="rounded-lg p-1 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                >
+                  <svg
+                    className="h-5 w-5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M6 18L18 6M6 6l12 12"
+                    />
+                  </svg>
+                </button>
+              </div>
+              <div className="overflow-y-auto p-4" style={{ maxHeight: 'calc(80vh - 80px)' }}>
+                {deduplicationLogs.length === 0 ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="text-center">
+                      <div className="mb-4 inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-600 border-r-transparent"></div>
+                      <p className="text-zinc-600 dark:text-zinc-400">Processing...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-1 font-mono text-sm">
+                    {deduplicationLogs.map((log, index) => (
+                      <div
+                        key={index}
+                        className="rounded px-2 py-1 text-zinc-800 dark:text-zinc-200"
+                      >
+                        {log}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {!deduplicating && deduplicationLogs.length > 0 && (
+                <div className="border-t border-zinc-200 p-4 dark:border-zinc-700">
+                  <button
+                    onClick={() => setShowDeduplicationModal(false)}
+                    className="w-full rounded-lg bg-blue-600 px-4 py-2 font-medium text-white transition-colors hover:bg-blue-700"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         )}
       </main>
     </div>
