@@ -566,8 +566,9 @@ if (!global.__queueProcessorRegistered) {
       }
       
       // Check if this is a backlink discovery crawl from an external domain
-      // If so, we should NOT save it to this audit (it belongs to a different domain)
-      let shouldSaveToDb = true;
+      // External pages should be saved but without domainId (so they don't appear in project domain view)
+      // They'll still appear in /crawls (all pages) and can be used for backlink tracking
+      let saveDomainId = domainId; // Default to project's domainId
       if (job.data.metadata?.backlinkDiscovery) {
       // Get the project's target domain
       const auditForDomain = await prisma.audit.findUnique({
@@ -579,42 +580,35 @@ if (!global.__queueProcessorRegistered) {
         const projectDomain = auditForDomain.Project.domain.toLowerCase();
         const crawledUrlDomain = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
         
-        // If domains don't match, don't save to this audit
+        // If domains don't match, save without domainId (external page)
+        // This allows the page to be saved and viewed in /crawls, but not in project domain view
         if (projectDomain !== crawledUrlDomain) {
-          shouldSaveToDb = false;
-          console.log(`[Queue] ⚠️  External domain detected (backlink discovery): ${crawledUrlDomain} (project: ${projectDomain}), skipping save to audit`);
-          // Log to backlink-discovery category, not crawled
-          addAuditLog(auditId, 'backlink-discovery', `🔍 Crawled external page (backlink source): ${url}`, { 
-            url, 
-            statusCode: seoData.statusCode, 
-            title: seoData.title,
-            externalDomain: true,
-            projectDomain,
-            crawledDomain: crawledUrlDomain,
-            backlinkDiscoveryCrawl: true,
-          });
+          saveDomainId = undefined; // Don't associate with project's domain
+          console.log(`[Queue] ℹ️  External domain detected (backlink discovery): ${crawledUrlDomain} (project: ${projectDomain}), saving without domainId`);
         }
       }
       }
       
       // Save to database (will check if audit exists)
       // Pass baseUrl for consistent URL normalization
+      // External pages will be saved with auditId but domainId = null
       let crawlResult = null;
-      if (shouldSaveToDb) {
       try {
-        crawlResult = await saveCrawlResultToDb(seoData, auditId, domainId, domainBaseUrl);
+        crawlResult = await saveCrawlResultToDb(seoData, auditId, saveDomainId, domainBaseUrl);
         if (crawlResult) {
-          console.log(`[Queue] Saved crawl result for: ${url}`);
+          console.log(`[Queue] Saved crawl result for: ${url}${saveDomainId ? '' : ' (external domain, no domainId)'}`);
           // Log to appropriate category based on crawl type
           const logCategory = job.data.metadata?.backlinkDiscovery ? 'backlink-discovery' : 'crawled';
+          const isExternal = saveDomainId === undefined;
           const logMessage = job.data.metadata?.backlinkDiscovery 
-            ? `🔍 Crawled backlink source: ${url}` 
+            ? (isExternal ? `🔍 Crawled external page (backlink source): ${url}` : `🔍 Crawled backlink source: ${url}`)
             : `Crawled: ${url}`;
           addAuditLog(auditId, logCategory, logMessage, { 
             url, 
             statusCode: seoData.statusCode, 
             title: seoData.title,
             backlinkDiscoveryCrawl: job.data.metadata?.backlinkDiscovery || false,
+            externalDomain: isExternal,
           });
         
         // Detect and save issues for this crawl result
@@ -641,11 +635,19 @@ if (!global.__queueProcessorRegistered) {
           // Don't fail the crawl if link checking setup fails
           console.error(`[Queue] Error setting up link checks for ${url}:`, linkError);
         }
+        } else {
+          console.log(`[Queue] ⚠️  Duplicate crawl result, skipping save for: ${url}`);
+        }
+      } catch (saveError) {
+        console.error(`[Queue] Error saving crawl result for ${url}:`, saveError);
+        // Don't fail the job if save fails - log and continue
+      }
 
-
-        // Reverse link discovery: Query search engines to find pages that link to this page
-        // This discovers backlinks from sites we haven't crawled yet
-        // IMPORTANT: Only search for backlinks to pages in the project's domain, not external domains
+      // Reverse link discovery: Query search engines to find pages that link to this page
+      // This discovers backlinks from sites we haven't crawled yet
+      // IMPORTANT: Only search for backlinks to pages in the project's domain, not external domains
+      // Only run if crawlResult was successfully saved
+      if (crawlResult) {
         try {
           const auditForDiscovery = await prismaCheck.audit.findUnique({
             where: { id: auditId },
@@ -777,33 +779,8 @@ if (!global.__queueProcessorRegistered) {
           // Don't fail the crawl if reverse discovery fails
           console.error(`[Queue] Error setting up reverse link discovery for ${url}:`, discoveryError);
         }
-      } else {
-        console.log(`[Queue] ⚠️  Duplicate crawl result, skipping save and increment for: ${url}`);
-        addAuditLog(auditId, 'skipped', `Skipped (duplicate crawl result): ${url}`, { url, reason: 'duplicate-result' });
-        // Don't increment pagesCrawled if it was a duplicate
-        return null;
       }
-      } catch (error: any) {
-      // If audit was deleted (foreign key constraint or not found error), skip this job
-      if (error?.message?.includes('not found') || 
-          error?.code === 'P2003' || 
-          error?.code === 'P2025') {
-        console.log(`[Queue] ⚠️  Audit ${auditId} not found (deleted), skipping save for job ${job.id}`);
-        // Don't try to remove active jobs - just return null
-        try {
-          const state = await job.getState();
-          if (state === 'waiting' || state === 'delayed') {
-            await job.remove();
-          }
-        } catch {
-          // Can't remove, that's okay - job will complete but won't save
-        }
-        return null; // Skip this job - don't save results
-      }
-      throw error; // Re-throw other errors
-      }
-      }
-      
+
       // CRITICAL: Re-check audit status before updating progress (stop might have been clicked)
       const preUpdateAuditCheck = await prismaCheck.audit.findUnique({
       where: { id: auditId },
@@ -836,9 +813,9 @@ if (!global.__queueProcessorRegistered) {
       throw error; // Re-throw other errors
       }
       
-      // Process backlinks even for external domains (so we can find links to target domain)
-      // This needs to happen even if we didn't save the crawlResult to this audit
-      if (crawlResult || !shouldSaveToDb) {
+      // Process backlinks for all crawled pages (including external domains)
+      // External pages are now saved with auditId but domainId = null, so crawlResult should always exist if save succeeded
+      if (crawlResult) {
         try {
         // Get projectId for backlink tracking
         const auditForBacklinks = await prismaCheck.audit.findUnique({
@@ -847,23 +824,8 @@ if (!global.__queueProcessorRegistered) {
         });
         
         if (auditForBacklinks?.projectId && seoData.links.length > 0) {
-          // For external domains that weren't saved, we need a crawlResult for backlink processing
-          // Create a minimal one with auditId: null (won't show in audit, but allows backlink processing)
-          let crawlResultForBacklinks = crawlResult;
-          
-          if (!crawlResultForBacklinks && !shouldSaveToDb) {
-            // External domain - create a minimal crawlResult with auditId: null for backlink processing
-            try {
-              const { saveCrawlResultToDb: saveCrawlResult } = await import('./crawler-db-optimized');
-              // Save with null auditId - won't show in audit results but allows backlink processing
-              crawlResultForBacklinks = await saveCrawlResultToDb(seoData, null as any, domainId, domainBaseUrl);
-              if (crawlResultForBacklinks) {
-                console.log(`[Queue] Created temporary crawl result (auditId: null) for backlink processing: ${url}`);
-              }
-            } catch (tempError) {
-              console.error(`[Queue] Error creating temporary crawl result for backlinks: ${url}`, tempError);
-            }
-          }
+          // Use the saved crawlResult for backlink processing
+          const crawlResultForBacklinks = crawlResult;
           
           if (crawlResultForBacklinks) {
             // 1. Forward backlinks: Create backlinks for pages this page links to (if they exist)
@@ -978,17 +940,42 @@ if (!global.__queueProcessorRegistered) {
         // IMPORTANT: Check database deduplication before queuing
         // This checks: already crawled in audit, already queued, or crawled in project within 14 days
         // Get projectId for project-level deduplication (14-day check)
-        const auditCheck = await prisma.audit.findUnique({
-          where: { id: auditId },
-          select: { projectId: true },
-        });
-        const shouldCrawlLink = await shouldCrawlUrlInAudit(
-          link.href, 
-          auditId, 
-          crawlQueue, 
-          baseUrl,
-          auditCheck?.projectId // This enables 14-day project-level deduplication check
-        );
+        // CRITICAL: Add timeout to prevent job from hanging on slow database queries
+        let shouldCrawlLink = true; // Default to true if check times out
+        try {
+          const auditCheckPromise = prisma.audit.findUnique({
+            where: { id: auditId },
+            select: { projectId: true },
+          });
+          
+          const shouldCrawlPromise = (async () => {
+            const auditCheck = await auditCheckPromise;
+            return await shouldCrawlUrlInAudit(
+              link.href, 
+              auditId, 
+              crawlQueue, 
+              baseUrl,
+              auditCheck?.projectId // This enables 14-day project-level deduplication check
+            );
+          })();
+          
+          // Add 3 second timeout for deduplication check
+          const timeoutPromise = new Promise<boolean>((_, reject) => 
+            setTimeout(() => reject(new Error('Deduplication check timeout')), 3000)
+          );
+          
+          shouldCrawlLink = await Promise.race([shouldCrawlPromise, timeoutPromise]);
+        } catch (dedupError) {
+          // If deduplication check times out or fails, log and continue (don't block job)
+          const errorMsg = dedupError instanceof Error ? dedupError.message : String(dedupError);
+          if (errorMsg.includes('timeout')) {
+            console.warn(`[Queue] ⚠️  Deduplication check timeout for ${link.href}, allowing crawl to prevent job hang`);
+          } else {
+            console.warn(`[Queue] ⚠️  Deduplication check failed for ${link.href}: ${errorMsg}, allowing crawl`);
+          }
+          shouldCrawlLink = true; // Default to allowing crawl if check fails
+        }
+        
         if (!shouldCrawlLink) {
           continue; // Already crawled, queued, or crawled in project within 14 days
         }
@@ -1003,9 +990,9 @@ if (!global.__queueProcessorRegistered) {
         const jobId = `${auditId}:${urlHash}`; // Unique job ID
         
         try {
-          // Don't add delay when queuing - delay is handled by the processor
-          // Adding delay here would make later jobs wait too long
-          const job = await crawlQueue.add(
+          // CRITICAL: Add timeout to prevent job from hanging if Redis is slow
+          // If queue.add() hangs, the job will complete anyway after timeout
+          const queueAddPromise = crawlQueue.add(
             {
               url: link.href,
               auditId,
@@ -1016,6 +1003,14 @@ if (!global.__queueProcessorRegistered) {
               // No delay - processor handles rate limiting
             }
           );
+          
+          // Add 5 second timeout for queue operations to prevent hanging
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Queue add timeout after 5 seconds')), 5000)
+          );
+          
+          const job = await Promise.race([queueAddPromise, timeoutPromise]) as any;
+          
           newJobsQueued++;
           // Log first few jobs to console to verify they're being queued
           if (newJobsQueued <= 3) {
@@ -1044,7 +1039,16 @@ if (!global.__queueProcessorRegistered) {
             console.log(`[Queue] ⏭️  Skipping duplicate job for ${normalizedLinkUrl}`);
             continue;
           }
-          throw error; // Re-throw other errors
+          
+          // If timeout error, log and continue (don't block job completion)
+          if (errorMessage.includes('timeout')) {
+            console.warn(`[Queue] ⚠️  Timeout queuing link ${link.href}, skipping to prevent job hang`);
+            continue;
+          }
+          
+          // For other errors, log but don't throw (don't block job completion)
+          console.error(`[Queue] ⚠️  Error queuing link ${link.href}: ${errorMessage}`);
+          continue; // Continue to next link instead of throwing
         }
         } // closes if (!link.isExternal && shouldCrawlUrl(...))
         } // closes for loop
@@ -1059,6 +1063,15 @@ if (!global.__queueProcessorRegistered) {
         }
         } // closes else block (isBacklinkDiscoveryCrawl)
       
+      // CRITICAL: Always return crawlResult to mark job as complete
+      // Even if link queuing or other async operations fail, the job should complete
+      // The job has already:
+      // 1. Crawled the page
+      // 2. Saved the result
+      // 3. Updated audit progress
+      // 4. Processed backlinks (async, non-blocking)
+      // 5. Queued new links (async, non-blocking)
+      // All async operations are fire-and-forget, so we can safely return
       return crawlResult;
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);

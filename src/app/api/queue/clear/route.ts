@@ -27,17 +27,56 @@ export async function POST() {
         Promise.all([
           crawlQueue.clean(0, 'completed', 10000),
           crawlQueue.clean(0, 'failed', 10000),
-          crawlQueue.clean(0, 'active', 10000),
           crawlQueue.clean(0, 'delayed', 10000),
         ]),
         new Promise((_, reject) => 
           setTimeout(() => reject(new Error('Clean operation timeout')), 10000)
         ),
       ]);
-      console.log('[Clear] Cleaned all job states');
+      console.log('[Clear] Cleaned completed/failed/delayed jobs');
     } catch (error) {
       console.warn('[Clear] Clean operation timed out or failed:', error);
       // Continue anyway - empty() should have cleared most jobs
+    }
+
+    // Force-remove stuck active jobs (jobs that have been active for more than 5 minutes)
+    // Active jobs can't be removed normally, but we can fail them if they're stuck
+    console.log('[Clear] Checking for stuck active jobs...');
+    try {
+      const activeJobs = await crawlQueue.getJobs(['active'], 0, 100);
+      let removedStuck = 0;
+      
+      for (const job of activeJobs) {
+        try {
+          const processedOn = job.processedOn || 0;
+          const age = Date.now() - processedOn;
+          const fiveMinutes = 5 * 60 * 1000;
+          
+          // If job has been active for more than 5 minutes, it's likely stuck
+          if (age > fiveMinutes) {
+            console.log(`[Clear] Attempting to remove stuck active job ${job.id} (active for ${Math.round(age / 1000)}s): ${job.data?.url}`);
+            try {
+              // Try to remove directly - might work if lock has expired
+              // Active jobs can't normally be removed, but if they're stuck long enough, the lock may have expired
+              await job.remove();
+              console.log(`[Clear] Successfully removed stuck job ${job.id}`);
+              removedStuck++;
+            } catch (removeError) {
+              // If remove fails, the job is still locked (being processed)
+              // It will eventually timeout when lock expires (2 minutes) or when worker completes
+              console.warn(`[Clear] Could not remove stuck job ${job.id} - still locked. It will timeout when lock expires (${Math.round((120000 - age) / 1000)}s remaining) or complete naturally.`);
+            }
+          }
+        } catch (jobError) {
+          console.warn(`[Clear] Error removing stuck job ${job.id}:`, jobError);
+        }
+      }
+      
+      if (removedStuck > 0) {
+        console.log(`[Clear] Removed ${removedStuck} stuck active job(s)`);
+      }
+    } catch (error) {
+      console.warn('[Clear] Error checking for stuck active jobs:', error);
     }
 
     // Get final counts
