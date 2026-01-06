@@ -14,6 +14,34 @@ import { addAuditLog } from './audit-logs';
  * 3. When those pages are crawled, extracts links and creates backlinks
  */
 
+// Patterns to identify sitemap URLs (should not be crawled)
+const SITEMAP_PATTERNS = [
+  /\/sitemap\.xml$/i,
+  /\/sitemap[^\/]*\.xml$/i, // sitemap-news.xml, sitemap-index.xml, etc.
+  /\/sitemap\/\d{4}\/\d{2}\/\d{2}/i, // /sitemap/2023/02/06 (NYTimes format)
+  /\/sitemaps?\/.*/i, // /sitemap/ or /sitemaps/ with anything after
+  /sitemap\.xml\?/i, // sitemap.xml?param=value
+  /\/sitemap_index\.xml$/i,
+  /\/sitemapindex\.xml$/i,
+];
+
+function isSitemapUrl(url: string): boolean {
+  try {
+    const urlObj = new URL(url);
+    const pathname = urlObj.pathname.toLowerCase();
+    const fullUrl = url.toLowerCase();
+    
+    // Check if URL matches any sitemap pattern
+    return SITEMAP_PATTERNS.some(pattern => 
+      pattern.test(pathname) || pattern.test(fullUrl)
+    );
+  } catch {
+    // If URL parsing fails, check the raw URL string
+    const urlLower = url.toLowerCase();
+    return SITEMAP_PATTERNS.some(pattern => pattern.test(urlLower));
+  }
+}
+
 interface DiscoveredBacklink {
   sourceUrl: string;
   sourceTitle: string | null;
@@ -171,6 +199,12 @@ export async function discoverBacklinksForPage(
     for (const result of searchResults) {
       const discoveredVia = result.discoveredVia || 'google';
       try {
+        // Skip sitemap URLs - these are not useful for backlink discovery
+        if (isSitemapUrl(result.url)) {
+          console.log(`[Reverse-Discovery] ⏭️  Skipping sitemap URL: ${result.url}`);
+          continue;
+        }
+        
         // Check if we've already crawled this page
         const existingPage = await prisma.crawlResult.findFirst({
           where: {

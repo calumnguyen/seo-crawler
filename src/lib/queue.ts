@@ -664,6 +664,7 @@ if (!global.__queueProcessorRegistered) {
           // 1. Page belongs to a project
           // 2. Page is NOT from a backlink discovery crawl (external pages)
           // 3. Page's domain matches the project's domain (prevent recursive searches for external domains)
+          // 4. Domain crawl is mostly complete (few pending domain crawls) - prioritize domain pages first
           if (auditForDiscovery?.projectId && !job.data.metadata?.backlinkDiscovery) {
             // Check if the crawled page belongs to the project's domain
             try {
@@ -674,16 +675,43 @@ if (!global.__queueProcessorRegistered) {
               // Only trigger discovery for pages in the project's domain
               // This prevents recursive searches when external pages (discovered via Google) are crawled
               if (projectDomain && pageDomain === projectDomain) {
-                const { discoverBacklinksForPage } = await import('./reverse-link-discovery');
-                // Discover backlinks asynchronously - don't wait
-                discoverBacklinksForPage(
-                  crawlResult.id,
-                  url,
-                  auditId,
-                  auditForDiscovery.projectId
-                ).catch((discoveryError) => {
-                  console.error(`[Queue] Error discovering backlinks for ${url}:`, discoveryError);
-                });
+                // CRITICAL: Only trigger backlink discovery if domain crawl is mostly complete
+                // Check if there are few pending domain crawls (< 50) before starting backlink discovery
+                // This ensures all domain pages are crawled first before branching out to backlinks
+                try {
+                  const allJobs = await crawlQueue.getJobs(['waiting', 'active', 'delayed'], 0, 10000);
+                  const domainCrawlJobs = allJobs.filter((j: any) => {
+                    try {
+                      // Count only non-backlink-discovery jobs for this audit
+                      return j.data?.auditId === auditId && !j.data?.metadata?.backlinkDiscovery;
+                    } catch {
+                      return false;
+                    }
+                  });
+                  
+                  const pendingDomainCrawls = domainCrawlJobs.length;
+                  
+                  // Only trigger backlink discovery if there are fewer than 50 pending domain crawls
+                  // This ensures domain pages are prioritized and mostly completed before backlink discovery starts
+                  if (pendingDomainCrawls < 50) {
+                    const { discoverBacklinksForPage } = await import('./reverse-link-discovery');
+                    // Discover backlinks asynchronously - don't wait
+                    discoverBacklinksForPage(
+                      crawlResult.id,
+                      url,
+                      auditId,
+                      auditForDiscovery.projectId
+                    ).catch((discoveryError) => {
+                      console.error(`[Queue] Error discovering backlinks for ${url}:`, discoveryError);
+                    });
+                  } else {
+                    // Domain crawl still has many pending jobs - defer backlink discovery
+                    console.log(`[Queue] ⏭️  Deferring backlink discovery for ${url} - ${pendingDomainCrawls} domain crawls still pending (will trigger when < 50 pending)`);
+                  }
+                } catch (queueCheckError) {
+                  // If queue check fails, skip backlink discovery to be safe
+                  console.log(`[Queue] ⏭️  Skipping backlink discovery - queue check failed: ${queueCheckError instanceof Error ? queueCheckError.message : String(queueCheckError)}`);
+                }
               } else {
                 // External page - skip backlink discovery to prevent recursive searches
                 console.log(`[Queue] ⏭️  Skipping backlink discovery for external page: ${url} (domain: ${pageDomain}, project domain: ${projectDomain})`);
