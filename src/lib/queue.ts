@@ -855,17 +855,21 @@ if (!global.__queueProcessorRegistered) {
       // 3. pagesTotal might be updated dynamically
       // The completion check endpoint will verify there are truly no jobs left
       
-      // CRITICAL: Do NOT follow links from backlink discovery pages
-      // Backlink discovery pages are crawled only to extract backlinks, not to discover more pages
-      // This prevents branching out too far from the original domain
+      // LINK_CRAWL_SETTING: Control whether to follow links from backlink discovery pages
+      // 'full' = follow links from backlink discovery pages (original behavior)
+      // 'nofollow-backlink' = save links but don't follow them from backlink discovery pages (default)
+      const LINK_CRAWL_SETTING = (process.env.LINK_CRAWL_SETTING || 'nofollow-backlink') as 'full' | 'nofollow-backlink';
       const isBacklinkDiscoveryCrawl = job.data.metadata?.backlinkDiscovery || false;
+      const shouldFollowBacklinkLinks = LINK_CRAWL_SETTING === 'full';
       
       let newJobsQueued = 0;
       let disallowedCount = 0;
       
-      if (isBacklinkDiscoveryCrawl) {
+      // Skip link following for backlink discovery pages if setting is 'nofollow-backlink' (default)
+      if (isBacklinkDiscoveryCrawl && !shouldFollowBacklinkLinks) {
         // Skip link following for backlink discovery pages
-        console.log(`[Queue] ⏭️  Skipping link following for backlink discovery page: ${url} (to prevent branching out from domain)`);
+        // Links are still saved via saveBacklinksForCrawlResult above, just not followed
+        console.log(`[Queue] ⏭️  Skipping link following for backlink discovery page: ${url} (LINK_CRAWL_SETTING=${LINK_CRAWL_SETTING})`);
       } else {
         // Extract and queue new links (only for domain pages, not backlink discovery pages)
         const newLinks = extractLinksFromCrawlResult(seoData, url);

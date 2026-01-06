@@ -92,16 +92,16 @@ export default function CrawlsPage() {
   return (
     <div className="min-h-screen bg-zinc-50 font-sans dark:bg-black">
       <main className="container mx-auto max-w-7xl px-4 py-8">
-        <div className="mb-8 flex items-center justify-between">
+        <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="mb-2 text-4xl font-bold text-black dark:text-zinc-50">
+            <h1 className="mb-2 text-3xl font-bold text-black dark:text-zinc-50 sm:text-4xl">
               All Crawled Pages
             </h1>
-            <p className="text-lg text-zinc-600 dark:text-zinc-400">
+            <p className="text-base text-zinc-600 dark:text-zinc-400 sm:text-lg">
               {total} pages crawled
             </p>
           </div>
-          <div className="flex gap-3">
+          <div className="flex flex-wrap gap-3">
             <button
               onClick={handleDeduplicateContentHash}
               disabled={deduplicating}
@@ -133,34 +133,34 @@ export default function CrawlsPage() {
                   href={`/crawls/${result.id}`}
                   className="block rounded-lg border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-zinc-600 dark:hover:bg-zinc-800"
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <h3 className="mb-1 font-semibold text-black dark:text-zinc-50">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="flex-1 min-w-0">
+                      <h3 className="mb-1 break-words font-semibold text-black dark:text-zinc-50">
                         {result.title || result.url}
                       </h3>
-                      <p className="mb-2 truncate text-sm text-zinc-600 dark:text-zinc-400">
+                      <p className="mb-2 break-all text-sm text-zinc-600 dark:text-zinc-400">
                         {result.url}
                       </p>
                       {result.metaDescription && (
-                        <p className="mb-2 line-clamp-2 text-sm text-zinc-500 dark:text-zinc-400">
+                        <p className="mb-2 line-clamp-2 break-words text-sm text-zinc-500 dark:text-zinc-400">
                           {result.metaDescription}
                         </p>
                       )}
-                      <div className="flex gap-4 text-xs text-zinc-500 dark:text-zinc-400">
-                        <span>Status: {result.statusCode}</span>
-                        <span>{result.h1Count} H1</span>
-                        <span>{result.h2Count} H2</span>
-                        <span>{result.imagesCount} images</span>
-                        <span>
+                      <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-zinc-500 dark:text-zinc-400">
+                        <span className="whitespace-nowrap">Status: {result.statusCode}</span>
+                        <span className="whitespace-nowrap">{result.h1Count} H1</span>
+                        <span className="whitespace-nowrap">{result.h2Count} H2</span>
+                        <span className="whitespace-nowrap">{result.imagesCount} images</span>
+                        <span className="whitespace-nowrap">
                           {result.internalLinksCount + result.externalLinksCount}{' '}
                           links
                         </span>
-                        <span>
+                        <span className="whitespace-nowrap">
                           {new Date(result.crawledAt).toLocaleString()}
                         </span>
                       </div>
                     </div>
-                    <div className="ml-4 text-sm text-zinc-500 dark:text-zinc-400">
+                    <div className="flex-shrink-0 text-sm text-zinc-500 dark:text-zinc-400 sm:ml-4">
                       {result.Audit?.Project?.name || 'Unknown Project'}
                     </div>
                   </div>

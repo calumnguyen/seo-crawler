@@ -270,6 +270,12 @@ QUEUE_CONCURRENCY=10  # Number of parallel crawl jobs
 CRAWL_DELAY_SECONDS=0.5  # Default crawl delay
 MAX_CRAWL_DELAY_SECONDS=5  # Maximum crawl delay cap
 
+# Optional: Link Following Behavior
+LINK_CRAWL_SETTING="nofollow-backlink"  # 'full' or 'nofollow-backlink' (default: 'nofollow-backlink')
+# - 'full': Follow links from backlink discovery pages (original behavior, may branch out far from domain)
+# - 'nofollow-backlink': Save links from backlink discovery pages but don't follow them (default, prevents excessive branching)
+# Note: Links are always saved regardless of this setting; this only controls whether they are followed/crawled
+
 # Optional: Proxy Support (format: host:port, one per line or comma-separated)
 PROXY_LIST="proxy1.com:8080,proxy2.com:8080"
 
