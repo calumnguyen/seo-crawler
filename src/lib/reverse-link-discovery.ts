@@ -63,6 +63,14 @@ interface DiscoveredBacklink {
 const domainSearchCache = new Map<string, number>();
 const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
+// Track total backlink discovery jobs queued per audit (for limit enforcement)
+// Key: `${auditId}`, Value: count of backlink discovery jobs queued
+const auditBacklinkQueueCount = new Map<string, number>();
+
+// Track if backlink discovery limit has been reached per audit
+// Key: `${auditId}`, Value: true if limit reached
+const auditBacklinkLimitReached = new Map<string, boolean>();
+
 /**
  * Discover backlink sources for a crawled page
  * Queries search engines to find pages that link to the target page
@@ -80,6 +88,13 @@ export async function discoverBacklinksForPage(
   projectId: string
 ): Promise<number> {
   try {
+    // Check if backlink discovery limit has already been reached for this audit
+    if (BACKLINK_CRAWL_LIMIT !== null && auditBacklinkLimitReached.get(auditId)) {
+      console.log(`[Reverse-Discovery] ⏭️  Skipping backlink discovery for ${targetUrl} - backlink crawl limit (${BACKLINK_CRAWL_LIMIT}) already reached for audit ${auditId}`);
+      // Don't log every skip to avoid spam - limit already logged when reached
+      return 0;
+    }
+    
     // Extract domain (no subdirectories) - same logic as queryGoogleBacklinks
     const urlObj = new URL(targetUrl);
     const domain = urlObj.hostname.replace(/^www\./, '');
@@ -227,7 +242,40 @@ export async function discoverBacklinksForPage(
     let queuedCount = 0;
     const baseUrl = new URL(targetUrl).origin;
     
+    // Get current count of backlink discovery jobs queued for this audit
+    const currentAuditCount = auditBacklinkQueueCount.get(auditId) || 0;
+    let auditCountReached = false;
+    
     for (const result of limitedSearchResults) {
+      // Check if we've reached the audit-wide limit before processing each result
+      if (BACKLINK_CRAWL_LIMIT !== null) {
+        const currentCount = auditBacklinkQueueCount.get(auditId) || 0;
+        if (currentCount >= BACKLINK_CRAWL_LIMIT) {
+          if (!auditBacklinkLimitReached.get(auditId)) {
+            // First time reaching the limit - log it
+            auditBacklinkLimitReached.set(auditId, true);
+            auditCountReached = true;
+            console.log(`[Reverse-Discovery] 🛑 Backlink crawl limit (${BACKLINK_CRAWL_LIMIT}) reached for audit ${auditId}. No more backlink discovery will be queued.`);
+            if (auditId) {
+              addAuditLog(
+                auditId,
+                'backlink-discovery',
+                `🛑 Backlink crawl limit reached: ${BACKLINK_CRAWL_LIMIT} backlink discovery jobs have been queued for this audit. No more backlink discovery will be performed. (BACKLINK_CRAWL_LIMIT=${BACKLINK_CRAWL_LIMIT})`,
+                {
+                  targetUrl,
+                  domain,
+                  limitReached: true,
+                  totalQueued: currentCount,
+                  limit: BACKLINK_CRAWL_LIMIT,
+                }
+              );
+            }
+          }
+          // Stop queueing more backlink discovery jobs
+          break;
+        }
+      }
+      
       const discoveredVia = result.discoveredVia || 'google';
       try {
         // Skip sitemap URLs - these are not useful for backlink discovery
@@ -298,6 +346,34 @@ export async function discoverBacklinksForPage(
           
           queuedCount++;
           
+          // Update audit-wide counter
+          const newCount = (auditBacklinkQueueCount.get(auditId) || 0) + 1;
+          auditBacklinkQueueCount.set(auditId, newCount);
+          
+          // Check if we just reached the limit
+          if (BACKLINK_CRAWL_LIMIT !== null && newCount >= BACKLINK_CRAWL_LIMIT) {
+            auditBacklinkLimitReached.set(auditId, true);
+            auditCountReached = true;
+            console.log(`[Reverse-Discovery] 🛑 Backlink crawl limit (${BACKLINK_CRAWL_LIMIT}) reached for audit ${auditId} after queuing ${result.url}. No more backlink discovery will be queued.`);
+            if (auditId) {
+              addAuditLog(
+                auditId,
+                'backlink-discovery',
+                `🛑 Backlink crawl limit reached: ${BACKLINK_CRAWL_LIMIT} backlink discovery jobs have been queued for this audit. No more backlink discovery will be performed. (BACKLINK_CRAWL_LIMIT=${BACKLINK_CRAWL_LIMIT})`,
+                {
+                  targetUrl,
+                  domain,
+                  limitReached: true,
+                  totalQueued: newCount,
+                  limit: BACKLINK_CRAWL_LIMIT,
+                  lastQueuedUrl: result.url,
+                }
+              );
+            }
+            // Stop queueing more (we've reached the limit with this one)
+            break;
+          }
+          
           // Log first few for visibility
           if (queuedCount <= 5) {
             console.log(`[Reverse-Discovery] Queued backlink source: ${result.url}`);
@@ -322,10 +398,26 @@ export async function discoverBacklinksForPage(
       }
     }
     
+    // Log if we stopped early due to limit
+    if (auditCountReached && queuedCount < limitedSearchResults.length) {
+      const remaining = limitedSearchResults.length - queuedCount;
+      console.log(`[Reverse-Discovery] ⚠️  Stopped queueing backlink discovery jobs: ${remaining} remaining results skipped due to audit limit (${BACKLINK_CRAWL_LIMIT})`);
+    }
+    
     // Log discovery summary to backlink-discovery logs
-    const limitInfo = BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT 
-      ? ` (limited from ${searchResults.length})` 
-      : '';
+    const currentAuditTotal = auditBacklinkQueueCount.get(auditId) || 0;
+    const limitReached = auditBacklinkLimitReached.get(auditId) || false;
+    let limitInfo = '';
+    if (BACKLINK_CRAWL_LIMIT !== null) {
+      if (limitReached) {
+        limitInfo = ` (limit reached: ${currentAuditTotal}/${BACKLINK_CRAWL_LIMIT} total for audit)`;
+      } else if (searchResults.length > BACKLINK_CRAWL_LIMIT) {
+        limitInfo = ` (limited from ${searchResults.length} results, ${currentAuditTotal}/${BACKLINK_CRAWL_LIMIT} total queued for audit)`;
+      } else {
+        limitInfo = ` (${currentAuditTotal}/${BACKLINK_CRAWL_LIMIT} total queued for audit)`;
+      }
+    }
+    
     addAuditLog(
       auditId,
       'backlink-discovery',
@@ -336,22 +428,27 @@ export async function discoverBacklinksForPage(
         queued: queuedCount,
         limited: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT,
         limitApplied: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT ? BACKLINK_CRAWL_LIMIT : null,
+        auditTotalQueued: currentAuditTotal,
+        auditLimit: BACKLINK_CRAWL_LIMIT,
+        limitReached: limitReached,
         completed: true,
       }
     );
     
-    // Also log to crawled category for visibility
-    addAuditLog(
-      auditId,
-      'crawled',
-      `🔍 Discovered ${queuedCount} potential backlink sources for ${targetUrl} via search engines${limitInfo}`,
-      {
-        targetUrl,
-        sourcesFound: searchResults.length,
-        queued: queuedCount,
-        limited: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT,
-      }
-    );
+    // Also log to crawled category for visibility (only if limit not reached, to avoid spam)
+    if (!limitReached) {
+      addAuditLog(
+        auditId,
+        'crawled',
+        `🔍 Discovered ${queuedCount} potential backlink sources for ${targetUrl} via search engines${limitInfo}`,
+        {
+          targetUrl,
+          sourcesFound: searchResults.length,
+          queued: queuedCount,
+          limited: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT,
+        }
+      );
+    }
     
     console.log(`[Reverse-Discovery] ✅ Queued ${queuedCount} backlink discovery crawls for: ${targetUrl}`);
     
