@@ -160,11 +160,11 @@ export async function POST() {
       }
       
       // If no jobs in queue, check if we should mark as completed
-      // CRITICAL: Only mark complete when ALL background processes have stopped for 15 minutes:
+      // CRITICAL: Only mark complete when ALL background processes have stopped for 5 minutes:
       // - No jobs in queue (sitemap parsing/filtering/queuing finished)
       // - pagesCrawled >= pagesTotal (all pages done)
       // - pagesTotal is set (> 0)
-      // - 15 minutes of inactivity (no changes to pagesTotal, pagesCrawled, or jobs)
+      // - 5 minutes of inactivity (no changes to pagesTotal, pagesCrawled, or jobs)
       if (auditJobs.length === 0 && pagesCrawled > 0 && actualPagesTotal > 0) {
         const allPagesCrawled = pagesCrawled >= actualPagesTotal;
         const previousReadyState = readyToCompleteMap.get(audit.id);
@@ -185,17 +185,23 @@ export async function POST() {
               pagesCrawled: pagesCrawled,
             });
             const secondsAgo = previousReadyState ? Math.round((Date.now() - previousReadyState.timestamp.getTime()) / 1000) : 0;
-            console.log(`[Check-Completion] Audit ${audit.id} ready to complete (${pagesCrawled}/${actualPagesTotal}), but activity detected - resetting 15min timer${previousReadyState ? ` (was ready for ${secondsAgo}s)` : ''}`);
+            console.log(`[Check-Completion] Audit ${audit.id} ready to complete (${pagesCrawled}/${actualPagesTotal}), but activity detected - resetting 5min timer${previousReadyState ? ` (was ready for ${secondsAgo}s)` : ''}`);
           } else {
-            // No activity - check if 15 minutes have passed
-            const fifteenMinutesAgo = new Date();
-            fifteenMinutesAgo.setMinutes(fifteenMinutesAgo.getMinutes() - 15);
+            // No activity - check if 5 minutes have passed
+            const fiveMinutesAgo = new Date();
+            fiveMinutesAgo.setMinutes(fiveMinutesAgo.getMinutes() - 5);
             const timeSinceReady = Date.now() - previousReadyState.timestamp.getTime();
-            const fifteenMinutesInMs = 15 * 60 * 1000;
+            const fiveMinutesInMs = 5 * 60 * 1000;
             
-            if (previousReadyState.timestamp <= fifteenMinutesAgo) {
-              // 15 minutes of inactivity - safe to mark complete
+            if (previousReadyState.timestamp <= fiveMinutesAgo) {
+              // 5 minutes of inactivity - safe to mark complete
               console.log(`[Check-Completion] Audit ${audit.id} has been inactive for ${Math.round(timeSinceReady / 1000)}s - marking complete`);
+              
+              // Get project info for retroactive backlink discovery
+              const auditWithProject = await prisma.audit.findUnique({
+                where: { id: audit.id },
+                select: { projectId: true },
+              });
               
               await prisma.audit.update({
                 where: { id: audit.id },
@@ -206,6 +212,23 @@ export async function POST() {
                   pagesTotal: Math.max(actualPagesTotal, pagesCrawled),
                 },
               });
+              
+              // Trigger retroactive backlink discovery for all crawled pages
+              // This ensures:
+              // 1. Pages that were crawled while discovery was deferred (>50 pending) still get discovered
+              // 2. Domains with <50 pages still get discovery (since pending never went above 50)
+              if (auditWithProject?.projectId && pagesCrawled > 0) {
+                try {
+                  const { triggerRetroactiveBacklinkDiscovery } = await import('@/lib/reverse-link-discovery');
+                  // Trigger asynchronously - don't wait
+                  triggerRetroactiveBacklinkDiscovery(audit.id, auditWithProject.projectId).catch((error) => {
+                    console.error(`[Check-Completion] Error triggering retroactive backlink discovery:`, error);
+                  });
+                  console.log(`[Check-Completion] Triggered retroactive backlink discovery for audit ${audit.id} (${pagesCrawled} pages)`);
+                } catch (error) {
+                  console.error(`[Check-Completion] Error importing retroactive discovery:`, error);
+                }
+              }
               
               // Delete all audit logs to save space
               try {
@@ -222,10 +245,10 @@ export async function POST() {
               completed.push(audit.id);
               console.log(`[Check-Completion] Marked audit ${audit.id} as completed: ${pagesCrawled} pages crawled`);
             } else {
-              // Still waiting for 15 minutes of inactivity
-              const secondsRemaining = Math.round((fifteenMinutesInMs - timeSinceReady) / 1000);
+              // Still waiting for 5 minutes of inactivity
+              const secondsRemaining = Math.round((fiveMinutesInMs - timeSinceReady) / 1000);
               const minutesRemaining = Math.round(secondsRemaining / 60);
-              console.log(`[Check-Completion] Audit ${audit.id} ready to complete but waiting for 15min inactivity (${minutesRemaining}m ${secondsRemaining % 60}s remaining)`);
+              console.log(`[Check-Completion] Audit ${audit.id} ready to complete but waiting for 5min inactivity (${minutesRemaining}m ${secondsRemaining % 60}s remaining)`);
             }
           }
         } else {

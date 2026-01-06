@@ -666,6 +666,9 @@ if (!global.__queueProcessorRegistered) {
           // 3. Page's domain matches the project's domain (prevent recursive searches for external domains)
           // 4. Domain crawl is mostly complete (few pending domain crawls) - prioritize domain pages first
           if (auditForDiscovery?.projectId && !job.data.metadata?.backlinkDiscovery) {
+            // Track if we've logged the deferred message for this audit (one-time log)
+            const deferredLogKey = `backlink-discovery-deferred-${auditId}`;
+            const hasLoggedDeferred = (global as any)[deferredLogKey];
             // Check if the crawled page belongs to the project's domain
             try {
               const urlObj = new URL(url);
@@ -704,8 +707,55 @@ if (!global.__queueProcessorRegistered) {
                     ).catch((discoveryError) => {
                       console.error(`[Queue] Error discovering backlinks for ${url}:`, discoveryError);
                     });
+                    
+                    // CRITICAL: When pending drops below 50 for the first time in a stable way, trigger discovery for all already-crawled pages
+                    // This handles the case where pages were crawled while >50 pending, so discovery was deferred
+                    // Only trigger if it was previously above 50 (not just the first time we check when it's already low)
+                    const retroactiveDiscoveryKey = `retroactive-discovery-triggered-${auditId}`;
+                    const wasAbove50Key = `retroactive-discovery-was-above-50-${auditId}`;
+                    
+                    // Track if we've seen pending > 50 for this audit (indicates discovery was deferred)
+                    if (pendingDomainCrawls > 50) {
+                      (global as any)[wasAbove50Key] = true;
+                    }
+                    
+                    // Only trigger if:
+                    // 1. We haven't triggered it yet for this audit
+                    // 2. We've previously seen pending > 50 (meaning discovery was deferred)
+                    // 3. Current pending is < 50
+                    //
+                    // Note: For domains with < 50 pages total, pending never goes above 50, so this won't trigger.
+                    // That's OK - retroactive discovery will trigger on completion instead (see check-completion route).
+                    if (!(global as any)[retroactiveDiscoveryKey] && (global as any)[wasAbove50Key] && pendingDomainCrawls < 50) {
+                      (global as any)[retroactiveDiscoveryKey] = true;
+                      console.log(`[Queue] 🎯 Pending domain crawls dropped below 50 (${pendingDomainCrawls}) after being above 50. Triggering retroactive backlink discovery for all already-crawled pages...`);
+                      
+                      // Trigger retroactive discovery asynchronously - don't wait
+                      (async () => {
+                        try {
+                          const { triggerRetroactiveBacklinkDiscovery } = await import('./reverse-link-discovery');
+                          await triggerRetroactiveBacklinkDiscovery(auditId, auditForDiscovery.projectId);
+                        } catch (error) {
+                          console.error(`[Queue] Error triggering retroactive backlink discovery:`, error);
+                        }
+                      })();
+                    }
                   } else {
                     // Domain crawl still has many pending jobs - defer backlink discovery
+                    // Log to backlink-discovery category once per audit to inform user
+                    if (!hasLoggedDeferred) {
+                      (global as any)[deferredLogKey] = true;
+                      addAuditLog(
+                        auditId,
+                        'backlink-discovery',
+                        `⏸️  Google and Bing search API queries are deferred until domain crawl is mostly complete. Currently ${pendingDomainCrawls} domain pages pending. Search will start automatically when < 50 domain pages remain.`,
+                        {
+                          deferred: true,
+                          pendingDomainCrawls,
+                          threshold: 50,
+                        }
+                      );
+                    }
                     console.log(`[Queue] ⏭️  Deferring backlink discovery for ${url} - ${pendingDomainCrawls} domain crawls still pending (will trigger when < 50 pending)`);
                   }
                 } catch (queueCheckError) {

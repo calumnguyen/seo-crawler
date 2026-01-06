@@ -495,3 +495,163 @@ export async function storeDiscoveredBacklinkSource(
   }
 }
 
+/**
+ * Trigger backlink discovery for all already-crawled pages in an audit
+ * This is called when pending domain crawls drop below 50 for the first time,
+ * or when a crawl completes, to ensure all pages get backlink discovery even if
+ * they were crawled while discovery was deferred (>50 pending)
+ */
+export async function triggerRetroactiveBacklinkDiscovery(
+  auditId: string,
+  projectId: string
+): Promise<void> {
+  // Prevent duplicate retroactive discovery triggers for the same audit
+  // This can be called from both queue.ts (when pending drops < 50) and check-completion (on audit complete)
+  const retroactiveDiscoveryRunningKey = `retroactive-discovery-running-${auditId}`;
+  const retroactiveDiscoveryCompletedKey = `retroactive-discovery-completed-${auditId}`;
+  
+  try {
+    // Check if already completed
+    if ((global as any)[retroactiveDiscoveryCompletedKey]) {
+      console.log(`[Reverse-Discovery] ⏭️  Retroactive backlink discovery already completed for audit ${auditId}, skipping...`);
+      return;
+    }
+    
+    // Check if currently running
+    if ((global as any)[retroactiveDiscoveryRunningKey]) {
+      console.log(`[Reverse-Discovery] ⏸️  Retroactive backlink discovery already running for audit ${auditId}, skipping duplicate trigger...`);
+      return;
+    }
+    
+    // Mark as running
+    (global as any)[retroactiveDiscoveryRunningKey] = true;
+    
+    console.log(`[Reverse-Discovery] 🔄 Starting retroactive backlink discovery for audit ${auditId}...`);
+    
+    // Get all crawled pages for this audit that belong to the project's domain
+    const audit = await prisma.audit.findUnique({
+      where: { id: auditId },
+      include: {
+        Project: {
+          select: {
+            domain: true,
+            baseUrl: true,
+          },
+        },
+      },
+    });
+    
+    if (!audit?.Project) {
+      console.error(`[Reverse-Discovery] ❌ Audit ${auditId} or project not found`);
+      return;
+    }
+    
+    const projectDomain = audit.Project.domain.replace(/^www\./, '').toLowerCase();
+    
+    // Get all crawl results for this audit that belong to the project's domain
+    const crawlResults = await prisma.crawlResult.findMany({
+      where: {
+        auditId,
+        url: {
+          startsWith: audit.Project.baseUrl,
+        },
+      },
+      select: {
+        id: true,
+        url: true,
+      },
+      orderBy: {
+        crawledAt: 'asc', // Process oldest first
+      },
+    });
+    
+    console.log(`[Reverse-Discovery] Found ${crawlResults.length} crawled pages for retroactive discovery`);
+    
+    if (crawlResults.length === 0) {
+      console.log(`[Reverse-Discovery] No pages to process for retroactive discovery`);
+      return;
+    }
+    
+    // Log start
+    addAuditLog(
+      auditId,
+      'backlink-discovery',
+      `🔄 Starting retroactive backlink discovery for ${crawlResults.length} already-crawled pages. This will query Google and Bing search APIs.`,
+      {
+        retroactive: true,
+        pagesToProcess: crawlResults.length,
+      }
+    );
+    
+    // Process pages in batches to avoid overwhelming the system
+    const BATCH_SIZE = 10;
+    let processed = 0;
+    
+    for (let i = 0; i < crawlResults.length; i += BATCH_SIZE) {
+      const batch = crawlResults.slice(i, i + BATCH_SIZE);
+      
+      // Process batch in parallel
+      await Promise.all(
+        batch.map(async (result) => {
+          try {
+            // discoverBacklinksForPage handles domain-level deduplication via domainSearchCache
+            // Since all pages are from the same domain, it will only search once per domain
+            // This is correct behavior - we search for link:domain.com (not per-page)
+            await discoverBacklinksForPage(
+              result.id,
+              result.url,
+              auditId,
+              projectId
+            );
+            processed++;
+            
+            // Log progress every 50 pages
+            if (processed % 50 === 0) {
+              console.log(`[Reverse-Discovery] Retroactive discovery progress: ${processed}/${crawlResults.length} pages processed`);
+            }
+          } catch (error) {
+            console.error(`[Reverse-Discovery] Error processing ${result.url} for retroactive discovery:`, error);
+          }
+        })
+      );
+      
+      // Small delay between batches to avoid rate limiting
+      if (i + BATCH_SIZE < crawlResults.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay between batches
+      }
+    }
+    
+    console.log(`[Reverse-Discovery] ✅ Retroactive backlink discovery complete: ${processed}/${crawlResults.length} pages processed`);
+    
+    addAuditLog(
+      auditId,
+      'backlink-discovery',
+      `✅ Retroactive backlink discovery complete: ${processed}/${crawlResults.length} pages processed. Google and Bing searches have been triggered for all crawled pages.`,
+      {
+        retroactive: true,
+        processed,
+        total: crawlResults.length,
+        completed: true,
+      }
+    );
+    
+    // Mark as completed (so future calls are skipped)
+    delete (global as any)[retroactiveDiscoveryRunningKey];
+    (global as any)[retroactiveDiscoveryCompletedKey] = true;
+  } catch (error) {
+    console.error(`[Reverse-Discovery] ❌ Error in retroactive backlink discovery:`, error);
+    addAuditLog(
+      auditId,
+      'backlink-discovery',
+      `❌ Error during retroactive backlink discovery: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        retroactive: true,
+        error: error instanceof Error ? error.message : String(error),
+      }
+    );
+    
+    // Clear running flag on error so it can be retried if needed
+    delete (global as any)[retroactiveDiscoveryRunningKey];
+  }
+}
+
