@@ -282,6 +282,13 @@ BING_SEARCH_API_KEY="your-bing-search-api-key"
 CAPTCHA_SOLVER="anticaptcha"  # 'anticaptcha' | '2captcha' | 'none'
 CAPTCHA_API_KEY="your-anticaptcha-api-key"
 CAPTCHA_TIMEOUT=120000  # Timeout in milliseconds (default: 120000 = 2 minutes)
+
+# Optional: Backlink Discovery Limit
+BACKLINK_CRAWL_LIMIT="nolimit"  # 'nolimit' or number (e.g., '300')
+# - Set to 'nolimit' (default) for no limit (current behavior)
+# - Set to a number to limit how many search results are queued for backlink crawling
+# - Prevents backlink discovery from branching out too much and blocking domain crawls
+# - Domain crawl continues normally regardless of this setting
 ```
 
 ### 4. Database Setup

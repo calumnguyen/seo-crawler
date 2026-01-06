@@ -14,6 +14,15 @@ import { addAuditLog } from './audit-logs';
  * 3. When those pages are crawled, extracts links and creates backlinks
  */
 
+// Backlink crawl limit from environment variable
+// Set to "nolimit" or leave unset for no limit (current behavior)
+// Set to a number (e.g., "300") to limit how many search results are queued for crawling
+// This prevents backlink discovery from branching out too much and blocking domain crawls
+const BACKLINK_CRAWL_LIMIT_STR = process.env.BACKLINK_CRAWL_LIMIT || 'nolimit';
+const BACKLINK_CRAWL_LIMIT = BACKLINK_CRAWL_LIMIT_STR.toLowerCase() === 'nolimit' 
+  ? null 
+  : parseInt(BACKLINK_CRAWL_LIMIT_STR, 10);
+
 // Patterns to identify sitemap URLs (should not be crawled)
 const SITEMAP_PATTERNS = [
   /\/sitemap\.xml$/i,
@@ -170,7 +179,29 @@ export async function discoverBacklinksForPage(
       ...bingResults.map(r => ({ ...r, discoveredVia: 'bing' as const })),
     ];
     
-    if (searchResults.length === 0) {
+    // Apply backlink crawl limit if set
+    // This prevents backlink discovery from queuing too many pages and blocking domain crawls
+    let limitedSearchResults = searchResults;
+    if (BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT) {
+      limitedSearchResults = searchResults.slice(0, BACKLINK_CRAWL_LIMIT);
+      console.log(`[Reverse-Discovery] ⚠️  Backlink crawl limit applied: ${searchResults.length} results found, limiting to ${BACKLINK_CRAWL_LIMIT} results`);
+      if (auditId) {
+        addAuditLog(
+          auditId,
+          'backlink-discovery',
+          `⚠️  Backlink crawl limit applied: ${searchResults.length} results found, limiting to first ${BACKLINK_CRAWL_LIMIT} results (BACKLINK_CRAWL_LIMIT=${BACKLINK_CRAWL_LIMIT})`,
+          {
+            targetUrl,
+            domain,
+            totalResults: searchResults.length,
+            limitedTo: BACKLINK_CRAWL_LIMIT,
+            limitApplied: true,
+          }
+        );
+      }
+    }
+    
+    if (limitedSearchResults.length === 0) {
       console.log(`[Reverse-Discovery] No backlink sources found for: ${targetUrl}`);
       addAuditLog(
         auditId,
@@ -186,7 +217,7 @@ export async function discoverBacklinksForPage(
       return 0;
     }
     
-    console.log(`[Reverse-Discovery] Found ${searchResults.length} potential backlink sources for: ${targetUrl}`);
+    console.log(`[Reverse-Discovery] Found ${searchResults.length} potential backlink sources for: ${targetUrl}${BACKLINK_CRAWL_LIMIT !== null ? ` (limited to ${limitedSearchResults.length} by BACKLINK_CRAWL_LIMIT)` : ''}`);
     
     // Normalize target URL for matching
     const normalizedTargetUrl = normalizeUrl(targetUrl);
@@ -196,7 +227,7 @@ export async function discoverBacklinksForPage(
     let queuedCount = 0;
     const baseUrl = new URL(targetUrl).origin;
     
-    for (const result of searchResults) {
+    for (const result of limitedSearchResults) {
       const discoveredVia = result.discoveredVia || 'google';
       try {
         // Skip sitemap URLs - these are not useful for backlink discovery
@@ -292,14 +323,19 @@ export async function discoverBacklinksForPage(
     }
     
     // Log discovery summary to backlink-discovery logs
+    const limitInfo = BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT 
+      ? ` (limited from ${searchResults.length})` 
+      : '';
     addAuditLog(
       auditId,
       'backlink-discovery',
-      `✅ Backlink discovery complete for ${targetUrl}: Found ${searchResults.length} source(s), queued ${queuedCount} for crawling`,
+      `✅ Backlink discovery complete for ${targetUrl}: Found ${searchResults.length} source(s), queued ${queuedCount} for crawling${limitInfo}`,
       {
         targetUrl,
         sourcesFound: searchResults.length,
         queued: queuedCount,
+        limited: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT,
+        limitApplied: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT ? BACKLINK_CRAWL_LIMIT : null,
         completed: true,
       }
     );
@@ -308,11 +344,12 @@ export async function discoverBacklinksForPage(
     addAuditLog(
       auditId,
       'crawled',
-      `🔍 Discovered ${queuedCount} potential backlink sources for ${targetUrl} via search engines`,
+      `🔍 Discovered ${queuedCount} potential backlink sources for ${targetUrl} via search engines${limitInfo}`,
       {
         targetUrl,
         sourcesFound: searchResults.length,
         queued: queuedCount,
+        limited: BACKLINK_CRAWL_LIMIT !== null && searchResults.length > BACKLINK_CRAWL_LIMIT,
       }
     );
     
